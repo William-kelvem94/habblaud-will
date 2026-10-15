@@ -23,6 +23,7 @@ import { carSprite, propSprite, shadowSprite } from './props';
 import { countBadge, fallbackIcon } from './shell-sprites';
 import { decorateElevator, drawSeasonalLights, drawSeasonalWindow, seasonalCostume, seasonalFurniture } from './seasonal';
 import { buildAreaVis, furnitureSprites, opaqueBounds, paintShell, toWallVis, WALL_MARGIN, wallItemOrigin, wallSprites, type AreaVis, type FurnVis, type WallVis } from './scene';
+import type { Pet } from '../pets';
 
 const enum K {
   FurnBase,
@@ -30,12 +31,13 @@ const enum K {
   Char,
   Prop,
   Car,
+  Pet,
 }
 
 interface Ent {
   k: K;
   y: number;
-  ref: FurnVis | Character | ExteriorProp | Car | null;
+  ref: FurnVis | Character | ExteriorProp | Car | Pet | null;
   area: AreaVis | null;
   scale: number;
 }
@@ -318,7 +320,7 @@ export class Renderer {
 
   // =================================================================== frame
 
-  frame(now: number, dt: number, opts: WorldOptions, sel: { agent: string | null; room: string | null; hover: string | null }): void {
+  frame(now: number, dt: number, opts: WorldOptions, sel: { agent: string | null; room: string | null; hover: string | null }, pets?: readonly Pet[]): void {
     const { ctx, camera } = this;
     this.date.setTime(this.clock());
     this.dt = dt;
@@ -421,8 +423,7 @@ export class Renderer {
         if (fs?.front) push(K.FurnFront, f.ay + 0.5, f, vis, s);
       }
     }
-    // os agentes e, na visita, o visitante
-    for (const ch of this.sim.people()) {
+    for (const ch of this.sim.chars.values()) {
       const head = this.headOf(ch);
       head.visible = false;
       if (ch.inside || ch.alpha <= 0.01 || now < ch.hiddenUntil) continue;
@@ -464,6 +465,12 @@ export class Renderer {
       }
     }
     for (const car of this.cars) if (visible(car.x - 24, car.y - 24, 48, 28)) push(K.Car, car.y, car, null, 1);
+    if (opts.pets !== false && pets) {
+      for (const pet of pets) {
+        if (!visible(pet.x - 16, pet.y - 16, 32, 24)) continue;
+        push(K.Pet, pet.y, pet, null, 1);
+      }
+    }
     ents.sort((a, b) => a.y - b.y || a.k - b.k);
 
     this.iconCount = 0;
@@ -483,6 +490,9 @@ export class Renderer {
           break;
         case K.Car:
           this.drawCar(e.ref as Car);
+          break;
+        case K.Pet:
+          this.drawPet(e.ref as Pet, now);
           break;
       }
     }
@@ -533,7 +543,7 @@ export class Renderer {
 
   /** Remove entradas de personagens que já saíram. */
   pruneHeads(): void {
-    for (const id of this.heads.keys()) if (!this.sim.person(id)) this.heads.delete(id);
+    for (const id of this.heads.keys()) if (!this.sim.chars.has(id)) this.heads.delete(id);
   }
 
   roomInSlot(slot: number): RoomState | undefined {
@@ -707,22 +717,6 @@ export class Renderer {
       return { x: b.x + 3, y: b.y + 3, w: b.w - 6, h: b.h - 6 };
     })();
     return { x: o.x + r.x, y: o.y + r.y, w: r.w, h: r.h };
-  }
-
-  /**
-   * Retângulo (px de mundo) do quadro (`painting`) da parede de uma área, pintado junto com as paredes: a cena Visita
-   * põe o quadro de carimbos da portaria em cima do da recepção.
-   */
-  paintingRect(areaId: string): { x: number; y: number; w: number; h: number } | null {
-    const vis = this.areas.get(areaId);
-    const it = vis?.layout.wallItems.find((x) => x.kind === 'painting');
-    if (!vis || !it) return null;
-    const w = toWallVis(it, vis.id);
-    const s = wallSprites(this.art, 'painting', it.variant === 'wide' ? undefined : it.variant, 0, w.seed);
-    if (!s) return null;
-    const o = wallItemOrigin(w, s.base);
-    const b = opaqueBounds(s.base.canvas);
-    return { x: o.x + b.x, y: o.y + b.y, w: b.w, h: b.h };
   }
 
   /** Luminância média da área de texto da placa (para escolher a cor do texto). */
@@ -947,8 +941,6 @@ export class Renderer {
    * mesa ao lado).
    */
   private drawCobwebs(now: number): void {
-    // visita: nenhum tempo veio do mundo, então nada de teia
-    if (this.sim.visit) return;
     const { ctx } = this;
     for (const ch of this.sim.chars.values()) {
       if (ch.mode !== 'shell' || !ch.shellSince || ch.leaving || !ch.seated || ch.atSpot !== ch.homeSpot) continue;
@@ -1225,5 +1217,46 @@ export class Renderer {
     }
   }
 
+  private drawPet(pet: Pet, now: number): void {
+    const { ctx } = this;
+    const s = this.art.petSprite?.({
+      kind: pet.kind,
+      pose: pet.pose,
+      dir: pet.dir,
+      frame: pet.frame,
+      variant: pet.variant,
+    });
+    if (!s) return;
 
+    ctx.save();
+    // Sombra suave sob o pet
+    ctx.fillStyle = 'rgba(20, 26, 38, 0.25)';
+    ctx.beginPath();
+    ctx.ellipse(Math.round(pet.x), Math.round(pet.y), 6, 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sprite
+    const px = Math.round(pet.x - s.ax);
+    const py = Math.round(pet.y - s.ay);
+    ctx.drawImage(s.canvas, px, py);
+
+    // Balão de fala/afeto
+    if (pet.bubble && now < pet.bubbleUntil) {
+      const bx = Math.round(pet.x);
+      const by = Math.round(pet.y - 16);
+      ctx.font = '600 8.5px ui-sans-serif, system-ui, -apple-system, sans-serif';
+      const textW = ctx.measureText(pet.bubble).width;
+      const bw = textW + 8;
+      const bh = 13;
+      ctx.fillStyle = 'rgba(24, 28, 40, 0.9)';
+      ctx.beginPath();
+      ctx.roundRect(bx - bw / 2, by - bh / 2, bw, bh, 4);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(pet.bubble, bx, by);
+    }
+    ctx.restore();
+  }
 }

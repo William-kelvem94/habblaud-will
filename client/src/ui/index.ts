@@ -20,6 +20,7 @@ import { FeedPanel } from './feed';
 import { HelpDialog } from './help';
 import { HistoryPopover } from './history';
 import { Deliveries } from './deliveries';
+import { Operations } from './operations';
 import { HoverTip } from './hovertip';
 import { hasRunningShells } from './model';
 import { hasCodexPermission } from './provider';
@@ -37,13 +38,6 @@ import { Toasts } from './toasts';
 import { UpdateToaster } from './version';
 import { TopBar } from './topbar';
 import { UpdateBanner } from './update';
-import { InviteCard } from './world/invite-card';
-import { WorldChip } from './world/world-chip';
-import { WorldSocialNotifier } from './world/away-summary';
-import { worldGate } from './world/settings-world';
-import { worldSectionMode } from './world/world-model';
-import { SceneSwitch, type CitySceneHost } from './world/scene-switch';
-import { worldSource } from '../net/world';
 import { FreeArea } from './viewport';
 import { tr } from '../../../shared/i18n';
 
@@ -58,7 +52,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
   return t.isContentEditable || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
 }
 
-export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi, city?: CitySceneHost): void {
+export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi): void {
   const storage = safeLocalStorage();
   let prefs: UiPrefs = loadPrefs(storage);
   let selection: Selection = world.getSelection();
@@ -80,9 +74,6 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
   let timelapse: TimelapsePlayer;
   /** A seleção em curso partiu da UI (lista, feed, aviso...), não de um clique no canvas. */
   let uiSelecting = false;
-  /** Botão Mundo e a ida e volta da cidade (só quando app.ts monta a cena). */
-  let scene: SceneSwitch | null = null;
-  const inCity = () => !!scene?.inCity;
 
   const ctx: UiContext = {
     store,
@@ -124,11 +115,6 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
       if (selection) ctx.select(selection, { focus: true });
     },
     camera(action) {
-      if (inCity() && city) {
-        if (action === 'overview') city.recenter();
-        else city.zoomBy(action === 'zoomIn' ? 1.25 : 1 / 1.25);
-        return;
-      }
       area.clearIntent();
       if (action === 'overview') world.overview();
       else world.zoomBy(action === 'zoomIn' ? 1.25 : 1 / 1.25);
@@ -181,6 +167,13 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
     get openAgentId() {
       return pty.isOpen ? pty.agentId : terminal.agentId;
     },
+    get minimizedInfo() {
+      return pty.minimizedInfo ?? terminal.minimizedInfo;
+    },
+    restoreMinimized() {
+      if (pty.minimizedInfo) pty.restoreMinimized();
+      else terminal.restoreMinimized();
+    },
     get available() {
       return pty.enabled || (!!store.snapshot?.meta.terminal && !store.replaying);
     },
@@ -188,7 +181,7 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
     get interactiveEnabled() {
       return pty.enabled;
     },
-    newSession: (cwd, account) => pty.newSession(cwd, account),
+    newSession: (cwd, account, provider, prompt, model, effort) => pty.newSession(cwd, account, provider, prompt, model, effort),
     open(id, opener) {
       const readOnly = !!store.snapshot?.meta.terminal && !store.replaying;
       if (pty.ptyOf(id) || (pty.enabled && !readOnly && ctx.agent(id)?.kind === 'main')) pty.openAgent(id);
@@ -199,8 +192,11 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
     },
     toggle(id, opener) {
       if (router.openAgentId === id) {
-        pty.close();
-        terminal.close();
+        if (router.minimizedInfo) router.restoreMinimized();
+        else {
+          pty.close();
+          terminal.close();
+        }
       } else router.open(id, opener);
     },
   };
@@ -208,6 +204,8 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
   // Entregas: o que os agentes terminaram (primeiro botão do grupo: é o que mais se usa pelo celular).
   const deliveries = new Deliveries(ctx, terminal);
   topbar.panelGroup.prepend(deliveries.button);
+  const operations = new Operations(ctx);
+  topbar.panelGroup.prepend(operations.button);
   // Links com ?agent= / ?delivery= (abrem o agente ou a entrega ao carregar).
   const openLink = (url: URL) => {
     const agent = url.searchParams.get('agent');
@@ -231,38 +229,7 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
   const feed = new FeedPanel(ctx);
   const toasts = new Toasts(ctx);
   const updateToaster = new UpdateToaster(ctx, (n) => toasts.push(n));
-  // Habblaud World (em desenvolvimento): seção em Configurações e cartão de convite, só com meta.world ligado.
-  const hw = worldSource(store);
-  settings = new SettingsPopover(ctx, notifier, sound, hw);
-  const invite = new InviteCard(ctx, hw, { openWorld: () => settings.showWorld(topbar.settingsBtn, 'register'), settingsOpen: () => settings.isOpen });
-  // Chip "🏙️ no mundo" / "⏸ pausado" na barra do topo (conta aprovada; nunca pela porta do celular).
-  const worldChip = new WorldChip(ctx, hw, () => settings.showWorld(topbar.settingsBtn, 'home'), (n) => toasts.push(n));
-  topbar.addStatus(worldChip.el);
-  // "Enquanto você estava fora" ao conectar e o aviso de quem bateu na porta (Fase 5; só pelo próprio computador).
-  const worldSocial = new WorldSocialNotifier(ctx, hw, {
-    active: () => worldSectionMode(hw.meta(), worldGate(ctx, hw)) === 'active',
-    toast: (n) => toasts.push(n),
-    openWorld: () => settings.showWorld(topbar.settingsBtn, 'home'),
-  });
-  // Botão Mundo: troca o escritório pela cidade (a cena vem de app.ts, carregada sob demanda).
-  if (city) {
-    scene = new SceneSwitch(ctx, hw, city, () => {
-      const on = inCity();
-      root.classList.toggle('is-city', on);
-      if (on) {
-        if (terminal.isOpen) terminal.close();
-        if (pty.isOpen) pty.close();
-        if (ctx.isNarrow() && panels.sidebar) ctx.togglePanel('sidebar', false);
-      }
-      invalidate();
-    });
-    topbar.addSceneButton(scene.button);
-    const sw = scene;
-    ctx.visitOwnBuilding = () => {
-      if (settings.isOpen) settings.hide();
-      void sw.visitOwn();
-    };
-  }
+  settings = new SettingsPopover(ctx, notifier, sound);
   help = new HelpDialog();
   const day = new DayLauncher(ctx, (el) => root.append(el));
   topbar.addPanelButton(day.button);
@@ -279,7 +246,7 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
   const scrim = h('div', { class: 'ui-scrim', attrs: { 'aria-hidden': 'true' }, on: { click: () => ctx.togglePanel('sidebar', false) } });
 
   root.classList.add('ui-root');
-  root.append(timelapse.vignette, topbar.el, sidebar.el, scrim, feed.el, drawer.el, terminal.el, pty.el, timelapse.el, timelapse.badge, toasts.el, banner.el, update.el, empty.el, invite.el, tip.el, settings.el, history.el, deliveries.el, help.el, renamer.el, live, splash.el);
+  root.append(timelapse.vignette, topbar.el, sidebar.el, scrim, feed.el, drawer.el, terminal.el, pty.el, timelapse.el, timelapse.badge, toasts.el, banner.el, update.el, empty.el, tip.el, settings.el, history.el, deliveries.el, operations.el, help.el, renamer.el, live, splash.el);
   area = new FreeArea(world, { root, topbar: topbar.el, sidebar: sidebar.el, drawer: drawer.el, feed: feed.el }, () => ({
     sidebar: panels.sidebar,
     feed: panels.feed,
@@ -288,10 +255,7 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
   }));
   drawer.onLayoutChange = () => applyLayout();
 
-  const components: UiComponent[] = [topbar, sidebar, drawer, terminal, pty, history, deliveries, feed, toasts, settings, empty, banner, tip, notifier, splash, timelapse, sound, day, updateToaster, invite, worldChip];
-  if (scene) components.push(scene);
-  root.append(worldSocial.el);
-  components.push(worldSocial);
+  const components: UiComponent[] = [topbar, sidebar, drawer, terminal, pty, history, deliveries, operations, feed, toasts, settings, empty, banner, tip, notifier, splash, timelapse, sound, day, updateToaster];
 
   // ---------------------------------------------------------------- renderização agrupada por quadro
   let rafId = 0;
@@ -373,18 +337,6 @@ export function createUI(root: HTMLElement, store: OfficeStore, world: WorldApi,
 
   function onKey(e: KeyboardEvent): void {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
-    // Na cidade os atalhos do escritório ficam desligados: Esc fecha o cartão aberto ou volta ao escritório.
-    if (inCity()) {
-      if (e.key === 'Escape') {
-        if (help.isOpen || settings.isOpen || history.isOpen || document.querySelector('dialog[open], [aria-modal="true"]')) return;
-        e.preventDefault();
-        if (!city?.escape()) scene?.close();
-      } else if (e.key === '?' && !isTypingTarget(e.target) && !help.isOpen) {
-        e.preventDefault();
-        help.open();
-      }
-      return;
-    }
     if (e.key === 'Escape') {
       if (help.isOpen || settings.isOpen || history.isOpen) return; // diálogo/popover tratam o próprio Esc
       // O terminal flutua sobre tudo: fecha primeiro (a busca dele, depois ele; a gaveta continua aberta).

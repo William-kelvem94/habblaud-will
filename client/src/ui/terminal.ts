@@ -10,7 +10,7 @@
 // Sessão do Codex: selo "Codex" no cabeçalho e um spinner neutro no rodapé (o ✻ é do Claude Code).
 import type { AgentInfo, Provider, RecentSession, TerminalEntry, TerminalInit } from '../../../shared/types';
 import { MessageComposer } from './composer';
-import type { UiComponent, UiContext } from './context';
+import type { TerminalDockInfo, UiComponent, UiContext } from './context';
 import { copyText, h, iconButton, prefersReducedMotion, setAttr, setHidden, setText, setTitle, setVariant } from './dom';
 import { calendarDayDiff, formatClock, formatDateTime, formatDuration, formatElapsed, relativeTime } from './format';
 import { ICONS } from './icons';
@@ -654,6 +654,8 @@ export class TerminalPanel implements UiComponent, TerminalControl {
   private actions: TermActions | null;
   private tabs: TermTabs;
   private movable: Movable;
+  private minimized = false;
+  private minimizeButton: HTMLButtonElement;
   /** Caixa de mensagem do rodapé (só a sessão ao vivo de um agente principal). */
   private composer: MessageComposer;
 
@@ -677,6 +679,14 @@ export class TerminalPanel implements UiComponent, TerminalControl {
     this.reconnEl = h('span', { class: 'ui-term__reconn', text: tr('reconectando…'), hidden: true, role: 'status' });
     this.findBtn = iconButton(ICONS.search, tr('Buscar na conversa ({0})', [findKey]), () => this.toggleSearch(), 'ui-icon-btn--sm ui-term__find');
     setAttr(this.findBtn, 'aria-expanded', 'false');
+    this.minimizeButton = h('button', {
+      class: 'ui-icon-btn ui-icon-btn--sm ui-pty__minimize',
+      type: 'button',
+      text: '−',
+      title: tr('Minimizar terminal'),
+      attrs: { 'aria-label': tr('Minimizar terminal'), 'aria-pressed': 'false' },
+      on: { click: () => this.toggleMinimized() },
+    });
     const close = iconButton(ICONS.close, tr('Fechar terminal (Esc)'), () => this.close(), 'ui-icon-btn--sm ui-term__close');
     const bar = h(
       'div',
@@ -687,6 +697,7 @@ export class TerminalPanel implements UiComponent, TerminalControl {
       this.reconnEl,
       this.findBtn,
       ...(this.actions ? [this.actions.el] : []),
+      this.minimizeButton,
       maximizeButton(() => this.movable),
       close,
     );
@@ -773,6 +784,19 @@ export class TerminalPanel implements UiComponent, TerminalControl {
     return this.id !== null;
   }
 
+  get minimizedInfo(): TerminalDockInfo | null {
+    if (!this.minimized || this.id === null) return null;
+    const agent = this.session ? undefined : this.ctx.agent(this.id);
+    const provider = this.session?.provider ?? agent?.provider ?? this.last?.provider ?? 'claude';
+    const label = this.session?.title || agent?.name || this.nameEl.textContent || tr('Conversa');
+    const state = this.session
+      ? sessionEndedText(this.session.lastAt, this.ctx.now())
+      : this.reconnEl.hidden
+        ? agent?.activity?.text ?? agent?.status ?? this.statusText.textContent ?? ''
+        : this.reconnEl.textContent ?? tr('reconectando…');
+    return { label, detail: `${provider === 'codex' ? 'Codex' : 'Claude Code'} · ${state}`.trim(), unread: this.unread };
+  }
+
   open(agentId: string, opener: HTMLElement | null = activeElement()): void {
     this.start(agentId, null, opener);
   }
@@ -792,12 +816,23 @@ export class TerminalPanel implements UiComponent, TerminalControl {
     this.id = null;
     this.session = null;
     this.last = null;
+    this.minimized = false;
+    this.el.classList.remove('is-minimized');
     this.el.hidden = true;
     this.clear();
     const opener = this.opener;
     this.opener = null;
     if (hadFocus && opener?.isConnected) opener.focus({ preventScroll: true });
     this.ctx.invalidate();
+  }
+
+  restoreMinimized(): void {
+    if (!this.minimized || this.id === null) return;
+    this.minimized = false;
+    this.syncMinimizeButton();
+    this.el.hidden = false;
+    this.ctx.invalidate();
+    requestAnimationFrame(() => this.afterRestore());
   }
 
   toggle(agentId: string, opener: HTMLElement | null = activeElement()): void {
@@ -830,6 +865,7 @@ export class TerminalPanel implements UiComponent, TerminalControl {
   private start(id: string, session: RecentSession | null, opener: HTMLElement | null): void {
     if (opener && !this.el.contains(opener)) this.opener = opener;
     if (this.id === id) {
+      this.restoreMinimized();
       this.focusLog();
       return;
     }
@@ -844,6 +880,7 @@ export class TerminalPanel implements UiComponent, TerminalControl {
     this.follow = true;
     this.unread = 0;
     this.lastEntryAt = 0;
+    this.restoreMinimized();
     if (this.el.hidden) this.movable.restore();
     this.el.hidden = false;
     this.el.classList.toggle('is-session', !!session);
@@ -1026,7 +1063,9 @@ export class TerminalPanel implements UiComponent, TerminalControl {
     // A busca continua valendo: destaca o que chegou (sem mudar o resultado atual).
     if (!initial && this.folded) this.refreshHits(touched);
     if (!initial) {
-      if (this.follow) this.scrollToEnd();
+      // Oculto/minimizado não deve forçar scrollTop para 0: preserva exatamente a leitura anterior e transforma
+      // cada entrada nova em contador na barra de atividade.
+      if (this.follow && !this.minimized) this.scrollToEnd();
       else this.unread += added + batch.attached.length;
       this.renderState();
     }
@@ -1124,11 +1163,12 @@ export class TerminalPanel implements UiComponent, TerminalControl {
 
   /** Mostra ou esconde cada linha conforme o filtro ("Só prompts" depende do que vem depois de cada resposta). */
   private applyFilter(): void {
-    const finals = this.filter === 'prompts' ? finalAnswerKeys(this.log.values()) : NO_FINALS;
+    const finals = finalAnswerKeys(this.log.values());
     let visible = 0;
     for (const item of this.log.values()) {
       const el = this.rows.get(item.key);
       if (!el) continue;
+      el.classList.toggle('is-final-answer', item.type === 'entry' && item.entry.kind === 'assistant' && finals.has(item.key));
       const show = itemVisible(item, this.filter, finals);
       el.classList.toggle('is-filtered', !show);
       if (show) visible++;
@@ -1329,6 +1369,37 @@ export class TerminalPanel implements UiComponent, TerminalControl {
 
   private focusLog(): void {
     this.scroll.focus({ preventScroll: true });
+  }
+
+  private toggleMinimized(): void {
+    this.minimized = !this.minimized;
+    this.syncMinimizeButton();
+    if (this.minimized) {
+      this.el.hidden = true;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && this.el.contains(active)) active.blur();
+    } else {
+      this.el.hidden = false;
+      requestAnimationFrame(() => this.afterRestore());
+    }
+    this.ctx.invalidate();
+  }
+
+  private afterRestore(): void {
+    if (this.follow) {
+      this.unread = 0;
+      this.scrollToEnd();
+      this.renderNewButton();
+    }
+    this.focusLog();
+  }
+
+  private syncMinimizeButton(): void {
+    const label = this.minimized ? tr('Restaurar terminal') : tr('Minimizar terminal');
+    this.minimizeButton.textContent = this.minimized ? '□' : '−';
+    this.minimizeButton.title = label;
+    this.minimizeButton.setAttribute('aria-label', label);
+    this.minimizeButton.setAttribute('aria-pressed', String(this.minimized));
   }
 
   // ---------------------------------------------------------------- estado e rodapé

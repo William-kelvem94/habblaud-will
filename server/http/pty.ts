@@ -85,7 +85,7 @@ export function createPtyRoutes(ptys: PtyManager): (req: IncomingMessage, res: S
       if (method === 'GET') return sendJson(res, 200, { status: ptys.status(), ptys: ptys.list() });
       if (method !== 'POST') return notAllowed(res, 'GET, POST');
       const body = (await readJson(req)) as Record<string, unknown>;
-      return sendJson(res, 201, ptys.create({ cwd: body?.cwd, account: body?.account, cols: body?.cols, rows: body?.rows }));
+      return sendJson(res, 201, ptys.create({ cwd: body?.cwd, account: body?.account, provider: body?.provider, prompt: body?.prompt, model: body?.model, effort: body?.effort, cols: body?.cols, rows: body?.rows }));
     }
     const id = decode(rawId);
     if (act === 'stream') {

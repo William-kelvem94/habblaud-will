@@ -6,6 +6,8 @@
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { dirname as posixDirname, join as posixJoin } from 'node:path/posix';
+import { dirname as win32Dirname, join as win32Join } from 'node:path/win32';
 import type { DeliveryAttachmentKind } from '../../shared/types';
 import { tr } from '../../shared/i18n';
 
@@ -51,9 +53,10 @@ export function fileType(path: string): { kind: DeliveryAttachmentKind; type: st
 
 /** Motivo para NÃO mostrar o caminho (só olhando o texto), ou undefined. */
 export function pathProblem(path: string): string | undefined {
-  if (!path || path.includes('\0') || !path.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(path)) return tr('caminho inválido');
-  if (!fileType(path)) return tr('tipo de arquivo que não se mostra aqui');
-  if (SECRET_DIRS.test(path) || SECRET_NAMES.test(path)) return tr('arquivo protegido');
+  const portable = path.replace(/\\/g, '/');
+  if (!portable || portable.includes('\0') || !(/^\//.test(portable) || /^[A-Za-z]:\//.test(portable)) || /(^|\/)\.\.(\/|$)/.test(portable)) return tr('caminho inválido');
+  if (!fileType(portable)) return tr('tipo de arquivo que não se mostra aqui');
+  if (SECRET_DIRS.test(portable) || SECRET_NAMES.test(portable)) return tr('arquivo protegido');
   return undefined;
 }
 
@@ -99,12 +102,19 @@ export function insideKnownFolder(
   path: string,
   opts: { accountDirs: readonly string[]; roots: readonly string[]; exists?: (p: string) => boolean },
 ): boolean {
-  if (opts.roots.some((r) => r && path.startsWith(`${r.replace(/\/+$/, '')}/`))) return true;
+  const portable = path.replace(/\\/g, '/');
+  if (opts.roots.some((r) => {
+    const root = r.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    return root && (portable === root || portable.startsWith(`${root}/`));
+  })) return true;
   const exists = opts.exists ?? existsSync;
+  const isWindowsPath = /^[A-Za-z]:\//.test(portable);
+  const dirnameOf = isWindowsPath || path.includes('\\') ? win32Dirname : posixDirname;
+  const joinOf = (base: string, ...parts: string[]) => (/^[A-Za-z]:[\\/]/.test(base) || base.includes('\\') ? win32Join : posixJoin)(base, ...parts);
   // Mesma codificação de sources/watcher.ts (encodeCwd): todo caractere não alfanumérico vira "-".
-  for (let dir = dirname(path); dir.split('/').filter(Boolean).length >= 2; dir = dirname(dir)) {
+  for (let dir = dirnameOf(path); dir.split(/[\\/]/).filter(Boolean).length >= 2; dir = dirnameOf(dir)) {
     const encoded = dir.replace(/[^a-zA-Z0-9]/g, '-');
-    if (opts.accountDirs.some((acc) => exists(join(acc, 'projects', encoded)))) return true;
+    if (opts.accountDirs.some((acc) => exists(joinOf(acc, 'projects', encoded)))) return true;
   }
   return false;
 }

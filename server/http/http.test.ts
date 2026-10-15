@@ -124,9 +124,9 @@ describe('API HTTP', () => {
       while (!re.test(text)) text += dec.decode((await reader.read()).value, { stream: true });
     };
     await readUntil(/event: feed\n/);
-    expect(text).toMatch(/^retry: 2000\n\nevent: snapshot\ndata: \{/);
+    expect(text).toMatch(/^retry: 2000\n\n(?:id: \d+\n)?event: snapshot\ndata: \{/);
     env.office.addActivity('.claude:1', { id: 'act-x', at: Date.now(), kind: 'read', icon: '📖', text: 'Lendo a.ts' }, true);
-    await readUntil(/"id":"act-x"/);
+    await readUntil(/event: feed\ndata: \[\{"id":"act-x"/);
     expect(text).toContain('event: feed\ndata: [{"id":"act-x"');
     ctrl.abort();
   });

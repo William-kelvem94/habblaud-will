@@ -28,8 +28,8 @@ export async function postPty<T = unknown>(url: string, body: unknown): Promise<
 const SIZE = { cols: 120, rows: 32 };
 
 /** Sessão nova do Claude Code na pasta (e conta) indicada. */
-export function createPty(cwd: string, account?: string): Promise<PtyInfo | undefined> {
-  return postPty<PtyInfo>('/api/pty', { cwd, account, ...SIZE });
+export function createPty(cwd: string, account?: string, provider: 'claude' | 'codex' = 'claude', prompt = '', model?: string, effort?: string): Promise<PtyInfo | undefined> {
+  return postPty<PtyInfo>('/api/pty', { cwd, account, provider, prompt, model, effort, ...SIZE });
 }
 
 /** Encerra a sessão noutro terminal e continua a mesma conversa aqui. */

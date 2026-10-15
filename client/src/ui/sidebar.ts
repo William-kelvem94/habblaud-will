@@ -16,6 +16,7 @@ import { tr } from '../../../shared/i18n';
 interface RoomRefs {
   head: HTMLButtonElement;
   name: HTMLElement;
+  wsBadge: HTMLElement;
   count: HTMLElement;
   path: HTMLElement;
   accs: KeyedList<AccountInfo | string>;
@@ -197,6 +198,7 @@ export class Sidebar implements UiComponent {
 
   private createRoom(g: RoomGroup): HTMLElement {
     const name = h('span', { class: 'ui-room__name' });
+    const wsBadge = h('span', { class: 'ui-room__ws', hidden: true });
     const count = h('span', { class: 'ui-room__count' });
     const accsEl = h('span', { class: 'ui-room__accs' });
     const path = h('span', { class: 'ui-room__path' });
@@ -208,7 +210,7 @@ export class Sidebar implements UiComponent {
       'button',
       { class: 'ui-room__head', type: 'button' },
       swatch,
-      h('span', { class: 'ui-room__line' }, name, count, accsEl),
+      h('span', { class: 'ui-room__line' }, name, wsBadge, count, accsEl),
       path,
       tasks,
     );
@@ -239,7 +241,7 @@ export class Sidebar implements UiComponent {
       create: (n) => this.createNode(n),
       update: (el, n) => this.updateNode(el, n),
     });
-    this.roomRefs.set(section, { head, name, count, path, accs, tasks, tasksBar, tasksText, nodes });
+    this.roomRefs.set(section, { head, name, wsBadge, count, path, accs, tasks, tasksBar, tasksText, nodes });
     return section;
   }
 
@@ -247,6 +249,13 @@ export class Sidebar implements UiComponent {
     const r = this.roomRefs.get(section)!;
     const sel = this.ctx.selection();
     setText(r.name, g.room.name);
+    if (g.room.workspaceName) {
+      setText(r.wsBadge, `📦 ${g.room.workspaceName}`);
+      setTitle(r.wsBadge, tr('Workspace / Monorepo: {0}', [g.room.workspaceName]));
+      setHidden(r.wsBadge, false);
+    } else {
+      setHidden(r.wsBadge, true);
+    }
     const present = g.agents.filter((a) => a.status !== 'offline').length;
     setText(r.count, String(present));
     setTitle(r.count, plural(present, tr('agente'), tr('agentes')));

@@ -1,7 +1,7 @@
 // Preferências da interface, persistidas em localStorage ('habblaud:prefs').
 // Puro: o armazenamento é injetado (testável em node).
 import { DEFAULT_SOUND_SETTINGS, sanitizeSoundSettings, type SoundSettings } from '../audio/scheduler';
-import type { DaylightMode, WorldOptions } from '../world/api';
+import type { DaylightMode, WorldOptions, ScenePalette } from '../world/api';
 import { DEFAULT_WORLD_OPTIONS } from '../world/api';
 
 export const PREFS_KEY = 'habblaud:prefs';
@@ -13,6 +13,11 @@ export interface UiPrefs {
   /** Ciclo dia/noite: automático (hora local), sempre dia ou sempre noite. */
   daylight: DaylightMode;
   theme: NonNullable<WorldOptions['theme']>;
+  palette: ScenePalette;
+  /** Barra de cota / energia dos personagens ('auto' mostra quando houver dados). */
+  healthBars: NonNullable<WorldOptions['healthBars']>;
+  /** Mascotes de escritório (gato/cachorro). */
+  pets: boolean;
   /** Sons sintetizados (interruptor geral; desligado por padrão). */
   sound: boolean;
   /** Volume mestre e categorias dos sons. */
@@ -23,8 +28,6 @@ export interface UiPrefs {
   feedOpen: boolean;
   /** Contas ocultas na barra lateral (AccountInfo.id). */
   hiddenAccounts: string[];
-  /** Habblaud World: aviso quando o primeiro visitante entra no seu prédio (a cada conexão). Ligado por padrão. */
-  worldVisitNotify: boolean;
 }
 
 export const DEFAULT_PREFS: UiPrefs = {
@@ -33,13 +36,15 @@ export const DEFAULT_PREFS: UiPrefs = {
   liveliness: DEFAULT_WORLD_OPTIONS.liveliness,
   daylight: 'auto',
   theme: 'auto',
+  palette: 'classic',
+  healthBars: 'auto',
+  pets: true,
   sound: false,
   sounds: DEFAULT_SOUND_SETTINGS,
   browserNotifications: false,
   sidebarOpen: true,
   feedOpen: true,
   hiddenAccounts: [],
-  worldVisitNotify: true,
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -59,13 +64,15 @@ export function sanitizePrefs(raw: unknown): UiPrefs {
     // preferências antigas: o interruptor "dia e noite" desligado vira "sempre dia"
     daylight: oneOf(o.daylight, ['auto', 'day', 'night'] as const, o.dayNight === false ? 'day' : d.daylight),
     theme: oneOf(o.theme, ['auto', 'none', 'christmas', 'halloween'] as const, d.theme),
+    palette: oneOf(o.palette, ['classic', 'mint', 'sunset', 'noir'] as const, d.palette),
+    healthBars: oneOf(o.healthBars, ['auto', 'always', 'off'] as const, d.healthBars),
+    pets: bool(o.pets, d.pets),
     sound: bool(o.sound, d.sound),
     sounds: sanitizeSoundSettings(o.sounds),
     browserNotifications: bool(o.browserNotifications, d.browserNotifications),
     sidebarOpen: bool(o.sidebarOpen, d.sidebarOpen),
     feedOpen: bool(o.feedOpen, d.feedOpen),
     hiddenAccounts: Array.isArray(o.hiddenAccounts) ? o.hiddenAccounts.filter((x): x is string => typeof x === 'string').slice(0, 20) : [],
-    worldVisitNotify: bool(o.worldVisitNotify, d.worldVisitNotify),
   };
 }
 
@@ -90,7 +97,7 @@ export function savePrefs(storage: StorageLike | null, prefs: UiPrefs): void {
 
 /** Parte das preferências que o mundo (canvas) consome. */
 export function worldOptionsFrom(p: UiPrefs): Partial<WorldOptions> {
-  return { showNames: p.showNames, bubbles: p.bubbles, liveliness: p.liveliness, dayNight: p.daylight !== 'day', daylight: p.daylight, theme: p.theme };
+  return { showNames: p.showNames, bubbles: p.bubbles, liveliness: p.liveliness, dayNight: p.daylight !== 'day', daylight: p.daylight, theme: p.theme, palette: p.palette, healthBars: p.healthBars, pets: p.pets };
 }
 
 /** localStorage com proteção contra navegadores que lançam exceção ao acessá-lo. */

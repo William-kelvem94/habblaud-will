@@ -26,7 +26,7 @@
 // final de rollouts grandes; o começo é lido depois, em segundo plano), com endBoot num `finally`.
 import { createReadStream, readdirSync, realpathSync, statSync, watch, type FSWatcher } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
-import type { AccountUsage, Activity, AgentStatus, SourceInfo } from '../../../shared/types';
+import type { AgentGoal, AccountUsage, Activity, AgentStatus, SourceInfo } from '../../../shared/types';
 import type { DetectedAccount } from '../../accounts/detect';
 import type { AccountEntry, AccountsService } from '../../accounts/service';
 import { errMsg, log } from '../../log';
@@ -35,6 +35,7 @@ import type { AgentSource } from '../source';
 import { FileTail, LineBuffer, warnOversizedLine } from '../tail';
 import type { TerminalParser } from '../terminal';
 import { codexPlanLabel, detectCodexAccounts } from './accounts';
+import { CodexGoals, codexGoalRoomKey } from './goals';
 import { readLocks, readRolloutHead, rolloutDirs, RolloutIndex, parseRolloutName, LOCKS_DIR, type LockInfo } from './files';
 import type { CodexLive } from './live';
 import {
@@ -111,6 +112,7 @@ interface CodexAccount {
   /** Pasta para exibir (no Docker, a do host). */
   configDir: string;
   index: RolloutIndex;
+  goals: CodexGoals;
   /** Locks vistos no último ciclo (null = sem a pasta de locks). */
   locks: Map<string, LockInfo> | null;
   /** Modo sem locks: rollouts modificados há pouco (thread → mtime), revistos a cada 10 s. */
@@ -133,6 +135,7 @@ interface ThreadTracker {
   nextResolveAt: number;
   tail?: FileTail;
   state: CodexState;
+  goal?: AgentGoal;
   /** Resultados lidos antes de o agente entrar no escritório (vão como histórico, sem feed). */
   backlog: CodexLineResult[];
   inOffice: boolean;
@@ -213,7 +216,7 @@ export class CodexSource implements AgentSource, CodexLive {
         old.configDir = e.detected.configDir;
         return old;
       }
-      return { id: e.id, dir: e.dir, configDir: e.detected.configDir, index: new RolloutIndex(e.dir, this.now), locks: null, recent: new Map(), recentAt: -Infinity };
+      return { id: e.id, dir: e.dir, configDir: e.detected.configDir, index: new RolloutIndex(e.dir, this.now), goals: new CodexGoals(e.dir, this.now), locks: null, recent: new Map(), recentAt: -Infinity };
     });
   }
 
@@ -298,6 +301,13 @@ export class CodexSource implements AgentSource, CodexLive {
   poll(boot = false): void {
     const now = (this.lastPollAt = this.now());
     const seen = new Set<string>();
+    const roomGoals = new Map<string, AgentGoal>();
+    for (const acc of this.accs) {
+      for (const [path, goal] of acc.goals.forRooms()) {
+        const prior = roomGoals.get(path);
+        if (!prior || prior.updatedAt < goal.updatedAt) roomGoals.set(path, goal);
+      }
+    }
     for (const acc of this.accs) {
       const present = this.presentThreads(acc, now);
       for (const [threadId, via] of present) {
@@ -307,8 +317,14 @@ export class CodexSource implements AgentSource, CodexLive {
           t = this.newTracker(acc, threadId);
           this.threads.set(key, t);
         }
+        const cwd = this.cwdOf(t);
+        const nextGoal = cwd ? roomGoals.get(codexGoalRoomKey(cwd)) : undefined;
+        const goalChanged = JSON.stringify(t.goal) !== JSON.stringify(nextGoal);
+        if (nextGoal) t.goal = { ...nextGoal };
+        else delete t.goal;
         try {
           this.syncThread(t, via, now, boot);
+          if (goalChanged && t.inOffice) this.applySummary(t);
         } catch (err) {
           log.warnOnce(`codex-thread:${key}:${errMsg(err)}`, tr('Codex: thread {0}: {1}', [key, errMsg(err)]));
         }
@@ -525,7 +541,7 @@ export class CodexSource implements AgentSource, CodexLive {
         return;
       }
       if (!path && !t.tail && t.acc.index.isCompressedOnly(t.threadId)) {
-        log.warnOnce('codex-zst', tr('Codex: há conversas compactadas (.jsonl.zst) que o Habblaud ainda não lê; elas ficam sem detalhes.'));
+        log.warnOnce('codex-zst', tr('Codex: rollouts compactados não podem ser acompanhados ao vivo; o histórico da sessão continua disponível.'));
       }
     }
     if (!t.tail) return;
@@ -688,6 +704,7 @@ export class CodexSource implements AgentSource, CodexLive {
     if (!t.inOffice) return;
     const s = t.state;
     const summary: TranscriptSummary = { tasks: s.tasks, stats: { ...s.stats } };
+    if (t.goal) summary.goal = t.goal;
     if (s.title) summary.title = s.title;
     if (s.model) summary.model = s.model;
     const branch = s.gitBranch ?? t.meta?.gitBranch;
@@ -707,6 +724,7 @@ export class CodexSource implements AgentSource, CodexLive {
         if (this.threads.get(t.key) !== t || t.state !== state) return;
         state.stats.toolCalls += prefix.state.stats.toolCalls;
         state.stats.subagents += prefix.state.stats.subagents;
+        if (prefix.state.stats.costUSD !== undefined) state.stats.costUSD = Math.round(((state.stats.costUSD ?? 0) + prefix.state.stats.costUSD) * 1e8) / 1e8;
         state.title ??= prefix.state.title;
         state.model ??= prefix.state.model;
         if (!state.tasks.length && prefix.state.tasks.length) state.tasks = prefix.state.tasks;

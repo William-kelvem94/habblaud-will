@@ -26,6 +26,7 @@ import { tr } from '../i18n';
 
 interface DemoProject {
   name: string;
+  goal: string;
   files: string[];
   prompts: string[];
   tasks: string[];
@@ -39,6 +40,7 @@ const ROOT = '/Users/dev/projetos';
 const PROJECTS: DemoProject[] = [
   {
     name: 'loja-virtual',
+    goal: tr('Entregar um checkout confiável, completo e fácil de usar no celular.'),
     files: ['src/pages/Checkout.tsx', 'src/components/Cart.tsx', 'src/api/orders.ts', 'src/hooks/useCart.ts', 'src/styles/theme.css', 'tests/cart.test.ts', 'package.json'],
     prompts: [tr('Cria a página de checkout com resumo do pedido'), tr('O total do carrinho não atualiza ao remover item'), tr('Adiciona cupom de desconto no checkout'), tr('Melhora o layout mobile da vitrine')],
     tasks: [tr('Criar página de checkout'), tr('Validar formulário de endereço'), tr('Integrar cálculo de frete'), tr('Escrever testes do carrinho'), tr('Ajustar layout mobile')],
@@ -48,6 +50,7 @@ const PROJECTS: DemoProject[] = [
   },
   {
     name: 'api-pagamentos',
+    goal: tr('Processar estornos via Pix com segurança e sem cobranças duplicadas.'),
     files: ['src/routes/payments.ts', 'src/services/pix.ts', 'src/db/migrations/004_refunds.sql', 'src/middleware/auth.ts', 'tests/pix.test.ts', 'docker-compose.yml'],
     prompts: [tr('Implementa estorno de pagamentos via Pix'), tr('Os webhooks estão duplicando cobranças, investiga'), tr('Adiciona rate limit nas rotas públicas')],
     tasks: [tr('Mapear fluxo de estorno'), tr('Criar migration de refunds'), tr('Implementar rota POST /refunds'), tr('Idempotência nos webhooks'), tr('Cobrir com testes')],
@@ -57,6 +60,7 @@ const PROJECTS: DemoProject[] = [
   },
   {
     name: 'app-mobile',
+    goal: tr('Entregar um perfil editável e uma navegação estável no aplicativo.'),
     files: ['app/screens/Home.tsx', 'app/screens/Profile.tsx', 'app/navigation/index.tsx', 'app/services/api.ts', 'app.json'],
     prompts: [tr('Cria a tela de perfil com foto e edição'), tr('A navegação trava ao voltar da tela de detalhes'), tr('Adiciona modo escuro no app')],
     tasks: [tr('Criar tela de perfil'), tr('Upload de foto'), tr('Corrigir navegação'), tr('Tema escuro')],
@@ -66,6 +70,7 @@ const PROJECTS: DemoProject[] = [
   },
   {
     name: 'data-pipeline',
+    goal: tr('Gerar relatórios corretos com datas e eventos sem duplicação.'),
     files: ['pipelines/ingest.py', 'pipelines/transform.py', 'dags/daily_report.py', 'requirements.txt', 'tests/test_transform.py'],
     prompts: [tr('O relatório diário está vindo com datas erradas'), tr('Adiciona deduplicação na ingestão'), tr('Otimiza a transformação que está lenta')],
     tasks: [tr('Investigar fuso horário'), tr('Corrigir parse de datas'), tr('Deduplicar eventos'), tr('Testes de regressão')],
@@ -75,6 +80,7 @@ const PROJECTS: DemoProject[] = [
   },
   {
     name: 'site-institucional',
+    goal: tr('Publicar um site institucional acessível, encontrável e completo.'),
     files: ['src/pages/index.astro', 'src/components/Hero.astro', 'src/content/blog/lancamento.md', 'astro.config.mjs', 'public/robots.txt'],
     prompts: [tr('Cria a seção de depoimentos na home'), tr('Melhora o SEO das páginas do blog'), tr('Adiciona formulário de contato')],
     tasks: [tr('Seção de depoimentos'), tr('Meta tags do blog'), 'Sitemap', tr('Formulário de contato')],
@@ -84,6 +90,7 @@ const PROJECTS: DemoProject[] = [
   },
   {
     name: 'chatbot-suporte',
+    goal: tr('Resolver dúvidas e encaminhar corretamente os casos que precisam de atendimento humano.'),
     files: ['bot/handlers/faq.ts', 'bot/llm/prompt.ts', 'bot/integrations/zendesk.ts', 'bot/index.ts', 'tests/faq.test.ts'],
     prompts: [tr('O bot não está encaminhando para humano'), tr('Adiciona integração com o Zendesk'), tr('Melhora o prompt para respostas mais curtas')],
     tasks: [tr('Regra de escalonamento'), tr('Cliente Zendesk'), tr('Ajustar prompt'), tr('Testes de conversa')],
@@ -478,6 +485,24 @@ export class DemoSimulator {
     this.notice(now, 'alert', tr('✋ {0} precisa de você em {1}: {2}', [a.info.name, a.project.name, reason]), a.info.id, a.info.roomId);
   }
 
+  /** No demo, permissões de ferramentas são aprovadas automaticamente; perguntas continuam esperando resposta. */
+  private demoPermissionStep(a: SimAgent, now: number): void {
+    const codex = a.info.provider === 'codex';
+    const p = codex ? demoCodexPermission('', a.project, a.rng, now) : demoPermission('', a.project, a.rng, now);
+    if (p.tool === ASK_TOOL) {
+      this.askPermission(a, now, 'question');
+      return;
+    }
+    this.activity(a, now, {
+      kind: 'other',
+      icon: '✅',
+      text: tr('Aprovado automaticamente no demo'),
+      detail: p.title,
+      tool: 'PermissionRequest',
+    });
+    a.nextActionAt = now + this.ms(800, 1_500);
+  }
+
   private resumeFromWaiting(a: SimAgent, now: number): void {
     a.phase = 'working';
     a.info.waitingFor = undefined;
@@ -551,10 +576,11 @@ export class DemoSimulator {
       status: 'idle',
       recent: [],
       tasks,
+      goal: { objective: project.goal, status: 'active', updatedAt: now },
       model: this.pick(codex ? CODEX_MODELS : MODELS, rng),
       gitBranch: this.pick(['main', 'develop', 'feat/checkout', 'fix/webhooks'], rng),
       // Codex: a política de aprovação (approval_policy) no lugar do modo de permissão do Claude Code.
-      permissionMode: codex ? 'on-request' : 'default',
+      permissionMode: codex ? 'never' : 'bypassPermissions',
       startedAt: now,
       lastEventAt: now,
       statusSince: now,
@@ -742,7 +768,7 @@ export class DemoSimulator {
         {
           const roll = a.rng();
           if (roll < 0.1) {
-            this.askPermission(a, now);
+            this.demoPermissionStep(a, now);
           } else if (roll < 0.2 && a.children.length === 0) {
             const count = 2 + Math.floor(a.rng() * 3);
             this.activity(a, now, describeTool('Agent', { description: tr('{0} frentes em paralelo', [count]), subagent_type: 'general-purpose' }));

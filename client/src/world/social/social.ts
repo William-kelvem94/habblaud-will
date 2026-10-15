@@ -5,12 +5,13 @@
 // (falas, comemorações, placar, apostas). A simulação chama update() a cada quadro.
 import type { AgentInfo } from '../../../../shared/types';
 import type { Dir, HeldItem, Pose } from '../../art/api';
-import type { AgentSocial, SocialEvent } from '../api';
+import type { AgentSocial, CharacterGame, CharacterPlayAction, SocialEvent } from '../api';
 import { mulberry32 } from '../../../../shared/hash';
 import { TILE } from '../constants';
 import { CAFE_ID, LOUNGE_ID, RECEPTION_ID, RESTROOM_ID } from '../layout/core';
 import type { SpotDef } from '../layout/types';
 import { FREE } from '../path/grid';
+import { isLongIdle } from '../sim/behavior';
 import { facing, type Character } from '../sim/character';
 import type { Sim } from '../sim/sim';
 import type { Step } from '../sim/steps';
@@ -96,6 +97,45 @@ export class Social {
     storage: StorageLike | null,
   ) {
     this.wallets = new Wallets(storage);
+  }
+
+  /** Ação lúdica acionada pela pessoa na gaveta. Em personagem ocupado, só mostra a reação visual. */
+  playAction(id: string, action: CharacterPlayAction, now: number): boolean {
+    const ch = this.sim.chars.get(id);
+    if (!ch || ch.gone || ch.leaving) return false;
+    const spec: Record<CharacterPlayAction, { emoji: string; icon: 'wave' | 'coffee' | 'star' | 'zzz'; text: string; pose: Pose; held?: HeldItem }> = {
+      wave: { emoji: '👋', icon: 'wave', text: tr('Oi! Que bom te ver!'), pose: 'raise_hand' },
+      coffee: { emoji: '☕', icon: 'coffee', text: tr('Um cafezinho pra dar energia!'), pose: 'drink', held: 'coffee' },
+      cheer: { emoji: '🎉', icon: 'star', text: tr('Boa! Vamos comemorar!'), pose: 'cheer' },
+      sleep: { emoji: '💤', icon: 'zzz', text: tr('Pausa para descansar.'), pose: 'sleep' },
+    };
+    const a = spec[action];
+    ch.chatEmoji = a.emoji;
+    ch.chatUntil = now + 1_700;
+    ch.showBubble(a.emoji, a.text, 2_600, now);
+    ch.setIcon(a.icon, action === 'sleep' ? 4_000 : 2_000, now);
+    const idle = (ch.mode === 'idle' || ch.mode === 'shell') && !ch.gathering && !ch.step && !ch.queue.length;
+    if (!idle || (action === 'sleep' && !ch.seated)) return true;
+    const steps: Step[] = [];
+    const spot = ch.atSpot ? this.sim.spots.get(ch.atSpot) : undefined;
+    if (action !== 'sleep' && spot) steps.push({ t: 'exit' });
+    steps.push({ t: 'act', pose: a.pose, ms: action === 'sleep' ? 3_500 : 1_700, ...(a.held ? { held: a.held } : {}) });
+    if (action !== 'sleep' && spot) steps.push({ t: 'enter', spot: spot.id });
+    ch.queue.push(...steps);
+    ch.thinkAt = now + 4_500;
+    return true;
+  }
+
+  /** Começa uma partida pedida pelo usuário sem interromper rodas ou tarefas em andamento. */
+  startGame(id: string, game: CharacterGame, now: number): string[] | null {
+    const host = this.sim.chars.get(id);
+    if (!host || !this.canJoin(host, now)) return null;
+    const kind = game as GatherKind;
+    const need = KINDS[kind].min - 1;
+    const candidates = this.candidates(host, now);
+    if (candidates.length < need || !this.start(kind, host, candidates, now, false, need, true)) return null;
+    const g = host.gathering;
+    return g ? g.members.map((m) => this.sim.chars.get(m.id)?.info.name ?? m.id) : null;
   }
 
   // =================================================================== disponibilidade
@@ -195,14 +235,14 @@ export class Social {
       .map((c) => {
         const cp = personaFor(c.info.seed);
         let s = partnerScore(kind, cp, bondBetween(host.info.seed, c.info.seed), rng);
-        if (this.sim.longIdle(c, now)) s -= 1.5;
+        if (isLongIdle(c.info.status, c.info.statusSince, now)) s -= 1.5;
         if (kind === 'mirror' && !hasTrait(cp, 'vaidade')) s -= 2;
         return { c, s };
       })
       .sort((a, b) => b.s - a.s);
     let chosen = ranked.slice(0, want).map((x) => x.c);
     // dorminhocos (ociosos há muito tempo) às vezes nem acordam com o convite
-    if (!forced) chosen = chosen.filter((c, i) => i < info.min - 1 || !this.sim.longIdle(c, now) || rng() < 0.35);
+    if (!forced) chosen = chosen.filter((c, i) => i < info.min - 1 || !isLongIdle(c.info.status, c.info.statusSince, now) || rng() < 0.35);
     if (chosen.length + 1 < (kind === 'mirror' ? (groupOnly ? 2 : 1) : info.min)) return false;
     const plan = this.plan(kind, chosen.length + 1, host);
     if (!plan) return false;
@@ -290,7 +330,7 @@ export class Social {
     }
     if (text) this.say(host, text, now);
     guests.forEach((c, i) => {
-      const sleepy = this.sim.longIdle(c, now);
+      const sleepy = isLongIdle(c.info.status, c.info.statusSince, now);
       const p = sleepy ? L.ACCEPT_SLEEPY : c.mode === 'shell' && g.kind !== 'rps' ? L.ACCEPT_SHELL : pool;
       g.pending.push({ id: c.id, at: now + 900 + i * 650, text: L.pick(p, rng) });
     });

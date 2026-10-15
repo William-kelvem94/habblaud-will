@@ -120,11 +120,19 @@ export class SpawnPanel {
   private readonly otherBtn: HTMLButtonElement;
   private readonly folder: HTMLInputElement;
   private readonly prompt: HTMLTextAreaElement;
+  private readonly provider: HTMLSelectElement;
+  private readonly account: HTMLSelectElement;
+  private readonly model: HTMLSelectElement;
+  private readonly effort: HTMLSelectElement;
+  private readonly codexSettings: HTMLElement;
+  private readonly codexModels = new Map<string, Array<{ id: string; displayName?: string; supportedReasoningEfforts?: Array<{ reasoningEffort?: string }> }>>();
   private readonly fileInput: HTMLInputElement;
+  private readonly attachButton: HTMLButtonElement;
   private readonly fileList: HTMLElement;
   private readonly dictate: DictationButton;
   private readonly submitBtn: HTMLButtonElement;
   private readonly status: HTMLElement;
+  private readonly help: HTMLElement;
   private anchor?: HTMLElement;
   private busy = false;
   private folders: FolderOption[] = [];
@@ -145,15 +153,40 @@ export class SpawnPanel {
       class: 'ui-rename__input ui-spawn__prompt',
       attrs: { id: 'ui-spawn-prompt', rows: 5, maxlength: SPAWN_PROMPT_MAX, placeholder: tr('O que o agente deve fazer (opcional)') },
     });
+    this.provider = h('select', { class: 'ui-spawn__provider', attrs: { 'aria-label': tr('Ferramenta do agente') } }, h('option', { attrs: { value: 'codex' }, text: tr('Codex') }), h('option', { attrs: { value: 'claude' }, text: tr('Claude Code') }));
+    this.provider.value = 'codex';
+    this.account = h('select', { class: 'ui-spawn__provider', attrs: { 'aria-label': tr('Conta do Codex') } });
+    this.model = h('select', { class: 'ui-spawn__provider', attrs: { 'aria-label': tr('Modelo do Codex') } }, h('option', { attrs: { value: '' }, text: tr('Padrão da conta') }));
+    this.effort = h('select', { class: 'ui-spawn__provider', attrs: { 'aria-label': tr('Força do raciocínio') } });
+    this.codexSettings = h('div', { class: 'ui-spawn__settings' });
+    this.refreshEfforts();
+    this.renderAccounts();
+    this.codexSettings.append(
+      h('label', { class: 'ui-spawn__field' }, h('span', { class: 'ui-spawn__label', text: tr('Conta') }), this.account),
+      h('label', { class: 'ui-spawn__field' }, h('span', { class: 'ui-spawn__label', text: tr('Modelo') }), this.model),
+      h('label', { class: 'ui-spawn__field' }, h('span', { class: 'ui-spawn__label', text: tr('Força do raciocínio') }), this.effort),
+    );
     this.fileInput = h('input', { type: 'file', hidden: true, attrs: { multiple: true, 'aria-hidden': 'true', tabindex: '-1' } });
     this.fileInput.addEventListener('change', () => {
       this.addFiles([...(this.fileInput.files ?? [])]);
       this.fileInput.value = '';
     });
-    const attachBtn = h('button', { class: 'ui-btn ui-spawn__attach', type: 'button', attrs: { title: tr('Anexar imagens ou arquivos ao pedido') }, on: { click: () => this.fileInput.click() } });
+    this.attachButton = h('button', { class: 'ui-btn ui-spawn__attach', type: 'button', attrs: { title: tr('Anexar imagens ou arquivos ao pedido') }, on: { click: () => this.fileInput.click() } });
     const clip = h('span', { attrs: { 'aria-hidden': 'true' } });
     clip.innerHTML = ICONS.attach;
-    attachBtn.append(clip, h('span', { text: tr('Anexar') }));
+    this.attachButton.append(clip, h('span', { text: tr('Anexar') }));
+    this.attachButton.disabled = this.provider.value === 'codex';
+    setHidden(this.attachButton, this.provider.value === 'codex');
+    this.provider.addEventListener('change', () => {
+      const codex = this.provider.value === 'codex';
+      this.attachButton.disabled = codex;
+      setHidden(this.codexSettings, !codex);
+      setHidden(this.attachButton, codex);
+      this.updateProviderHelp();
+      if (codex) this.clearFiles();
+    });
+    this.account.addEventListener('change', () => { this.model.value = ''; void this.loadCodexSettings(); });
+    this.model.addEventListener('change', () => this.refreshEfforts());
     this.dictate = new DictationButton(
       (t) => {
         const { value, caret } = insertDictation(this.prompt.value, this.prompt.selectionStart ?? this.prompt.value.length, this.prompt.selectionEnd ?? this.prompt.value.length, t.text);
@@ -166,6 +199,8 @@ export class SpawnPanel {
     this.fileList = h('ul', { class: 'ui-spawn__files', attrs: { 'aria-label': tr('Anexos') } });
     this.submitBtn = h('button', { class: 'ui-btn ui-perm__btn ui-perm__btn--allow ui-spawn__go', type: 'button', on: { click: () => void this.submit() } }, tr('Começar'));
     this.status = h('p', { class: 'ui-rename__hint ui-spawn__status', attrs: { role: 'status', 'aria-live': 'polite' } });
+    this.help = h('p', { class: 'ui-rename__hint ui-spawn__help' });
+    this.updateProviderHelp();
     for (const field of [this.folder, this.prompt] as HTMLElement[]) {
       field.addEventListener('keydown', (e: KeyboardEvent) => {
         e.stopPropagation();
@@ -194,9 +229,11 @@ export class SpawnPanel {
         this.folder,
         h('label', { class: 'ui-spawn__label', attrs: { for: 'ui-spawn-prompt' }, text: tr('Pedido') }),
         this.prompt,
-        h('div', { class: 'ui-spawn__tools' }, this.dictate.el, attachBtn, this.fileInput),
+        h('label', { class: 'ui-spawn__field' }, h('span', { class: 'ui-spawn__label', text: tr('Ferramenta') }), this.provider),
+        this.codexSettings,
+        h('div', { class: 'ui-spawn__tools' }, this.dictate.el, this.attachButton, this.fileInput),
         this.fileList,
-        h('p', { class: 'ui-rename__hint', text: tr('Começa na hora uma sessão do Claude Code em segundo plano no computador, na pasta escolhida; as permissões chegam aqui. Pasta que o Claude Code ainda não conhece abre no app do Claude e espera o Enter lá. Anexos vão para ~/.habblaud/attachments e o pedido leva os caminhos.') }),
+        this.help,
         this.submitBtn,
         this.status,
       ),
@@ -220,6 +257,8 @@ export class SpawnPanel {
     if (this.isOpen) return this.hide();
     // Primeiro com o que o escritório já sabe; a lista do servidor (histórico) chega logo depois.
     if (!this.folders.length) this.setFolders(spawnFolders(this.ctx.store.snapshot).map((path) => ({ path, name: path.split(/[\\/]/).pop() || path, lastAt: 0 })));
+    this.renderAccounts();
+    if (this.provider.value === 'codex') void this.loadCodexSettings();
     void this.loadFolders();
     void this.checkDictation();
     if (!this.busy) setText(this.status, '');
@@ -251,6 +290,56 @@ export class SpawnPanel {
 
   private async checkDictation(): Promise<void> {
     setHidden(this.dictate.el, !(await dictationAvailable()));
+  }
+
+  private renderAccounts(): void {
+    const accounts = (this.ctx.store.snapshot?.accounts ?? []).filter((a) => a.provider === 'codex');
+    const previous = this.account.value;
+    this.account.replaceChildren(...accounts.map((a) => h('option', { attrs: { value: a.id }, text: `${a.name} · ${a.id}` })));
+    if (accounts.some((a) => a.id === previous)) this.account.value = previous;
+    else this.account.value = accounts.find((a) => a.id === '.codex')?.id ?? accounts[0]?.id ?? '';
+  }
+
+  private async loadCodexSettings(): Promise<void> {
+    const account = this.account.value;
+    if (!account) return;
+    let models = this.codexModels.get(account);
+    if (!models) {
+      try {
+        const modelsRes = await fetch(`/api/codex/models?account=${encodeURIComponent(account)}`, { cache: 'no-store' });
+        const modelData = await modelsRes.json() as { models?: Array<{ id?: string; displayName?: string; supportedReasoningEfforts?: Array<{ reasoningEffort?: string }> }> };
+        if (!modelsRes.ok) throw new Error(tr('Não foi possível carregar modelos do Codex.'));
+        models = (modelData.models ?? []).filter((m): m is typeof m & { id: string } => typeof m.id === 'string');
+        this.codexModels.set(account, models);
+      } catch (err) {
+        this.say((err as Error).message, true);
+      }
+    }
+    try {
+      this.model.replaceChildren(h('option', { attrs: { value: '' }, text: tr('Padrão da conta') }), ...(models ?? []).map((m) => h('option', { attrs: { value: m.id }, text: m.displayName ? `${m.displayName} · ${m.id}` : m.id })));
+      const response = await fetch(`/api/codex/defaults?account=${encodeURIComponent(account)}`, { cache: 'no-store' });
+      const body = await response.json() as { defaults?: { model?: string; effort?: string }; error?: string };
+      if (!response.ok) throw new Error(body.error ?? tr('Não foi possível carregar as preferências do Codex.'));
+      this.model.value = body.defaults?.model ?? '';
+      this.effort.value = body.defaults?.effort ?? '';
+    } catch (err) {
+      this.say((err as Error).message, true);
+    }
+    this.refreshEfforts();
+  }
+
+  private refreshEfforts(): void {
+    const levels = this.codexModels.get(this.account.value)?.find((m) => m.id === this.model.value)?.supportedReasoningEfforts?.map((x) => x.reasoningEffort).filter((x): x is string => !!x);
+    const options = [['', tr('Padrão do modelo')], ...(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const).filter((x) => !levels?.length || levels.includes(x)).map((x) => [x, ({ none: 'Nenhum', minimal: 'Mínimo', low: 'Baixo', medium: 'Médio', high: 'Alto', xhigh: 'Extra alto', max: 'Máximo', ultra: 'Ultra' } as Record<string, string>)[x]])];
+    const selected = this.effort.value;
+    this.effort.replaceChildren(...options.map(([value, label]) => h('option', { attrs: { value }, text: label })));
+    if (options.some(([value]) => value === selected)) this.effort.value = selected;
+  }
+
+  private updateProviderHelp(): void {
+    setText(this.help, this.provider.value === 'codex'
+      ? tr('Abre o Codex nesta pasta e mostra o terminal aqui. Modelo e raciocínio escolhidos valem só para esta sessão; “padrão” usa as preferências da conta.')
+      : tr('Abre uma nova sessão do Claude Code nesta pasta. Você pode anexar arquivos ao pedido; o terminal aparece no Habblaud.'));
   }
 
   private setFolders(list: FolderOption[]): void {
@@ -366,6 +455,16 @@ export class SpawnPanel {
         ids.push(r.id);
       }
       this.say(tr('Começando no computador…'));
+      if (this.provider.value === 'codex') {
+        if (!this.ctx.terminals?.interactiveEnabled) throw new Error(tr('Terminal interativo indisponível. Ative HABBLAUD_PTY=1 e configure o Codex.'));
+        await this.ctx.terminals.newSession(folder, this.account.value || undefined, 'codex', this.prompt.value, this.model.value || undefined, this.effort.value || undefined);
+        this.say(tr('Codex iniciado. A conversa vai aparecer como agente no escritório em instantes.'));
+        this.prompt.value = '';
+        this.clearFiles();
+        writePref(folder);
+        this.ctx.announce(tr('Agente Codex iniciado.'));
+        return;
+      }
       let info = await api<SpawnInfo>('/api/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1,7 +1,8 @@
 // Arquivos de uma pasta do Codex (CODEX_HOME) que a fonte lê: os rollouts (sessions/AAAA/MM/DD/ e
 // archived_sessions/) e os locks dos threads carregados (thread-writer-locks/<thread>.lock). Só leitura: nada é
 // criado e os locks são só conferidos pela EXISTÊNCIA (abrir com flock seguraria o lock e quebraria o Codex).
-// auth.json, config.toml, history.jsonl, shell_snapshots/, logs e os SQLite nunca são abertos.
+// auth.json, config.toml, history.jsonl, shell_snapshots/, logs e os bancos de estado nunca são abertos. A tabela
+// específica de metas é lida em modo somente leitura por ./goals.ts.
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCodexState, metaFromLine, parseRolloutLine, type RolloutMeta } from './rollout';

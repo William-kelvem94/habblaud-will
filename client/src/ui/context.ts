@@ -11,6 +11,15 @@ export interface UiComponent {
 
 export type PanelName = 'sidebar' | 'feed';
 
+export interface TerminalDockInfo {
+  /** Agente ou conversa que continua aberta enquanto o terminal está recolhido. */
+  label: string;
+  /** Atividade ou estado mais recente, para a barra de atividade. */
+  detail: string;
+  /** Mensagens novas que chegaram enquanto o usuário estava lendo outra parte. */
+  unread?: number;
+}
+
 /**
  * Uma janela de terminal só, por agente: o interativo quando a sessão roda dentro do Habblaud (pty); senão o
  * de leitura (com "Assumir daqui" para passar a ser interativo). Montado em ui/index.ts.
@@ -18,6 +27,10 @@ export type PanelName = 'sidebar' | 'feed';
 export interface TerminalRouter {
   /** Agente com o terminal aberto (qualquer um dos dois), ou null. */
   readonly openAgentId: string | null;
+  /** Estado mostrado como item na barra de atividade quando a janela é minimizada. */
+  readonly minimizedInfo: TerminalDockInfo | null;
+  /** Restaura a janela minimizada sem recriar a conversa nem perder o estado visual. */
+  restoreMinimized(): void;
   open(agentId: string, opener?: HTMLElement | null): void;
   toggle(agentId: string, opener?: HTMLElement | null): void;
   /** O terminal deste agente seria o interativo. */
@@ -27,7 +40,7 @@ export interface TerminalRouter {
   /** Terminal interativo ligado (abrir sessões novas, assumir, encerrar). */
   readonly interactiveEnabled: boolean;
   /** Sessão nova do Claude Code na pasta, aberta no terminal interativo. */
-  newSession(cwd: string, account?: string): Promise<void>;
+  newSession(cwd: string, account?: string, provider?: 'claude' | 'codex', prompt?: string, model?: string, effort?: string): Promise<void>;
 }
 
 export type HelpSection = 'usage' | 'codex';
@@ -69,11 +82,6 @@ export interface UiContext {
   toggleSettings(): void;
   /** Abre o campo de renomear a sala perto do ponto (px da janela); botão direito na sala (ui/roomrename.ts). */
   renameRoom?(roomId: string, at: { x: number; y: number }): void;
-  /**
-   * (Opcional) "Ver como os outros veem": abre a cidade do Habblaud World e entra no próprio prédio (a cena Visita). Só
-   * existe com a cena Mundo montada (app.ts).
-   */
-  visitOwnBuilding?(): void;
   /** Abre as configurações na seção "Sobre" (versão em uso e versão nova). */
   openAbout(): void;
   /** Abre/fecha o timelapse do dia (ui/timelapse.ts). */

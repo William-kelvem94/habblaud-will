@@ -1,12 +1,13 @@
+import fs from 'node:fs';
 // Servidor do Habblaud: observa as sessões abertas do Claude Code (todas as contas),
 // mantém o modelo do escritório e transmite via SSE. Sem dependências de runtime.
 //   npm run dev    -> tsx server/index.ts --dev (Vite em middleware mode, HMR no mesmo servidor)
 //   npm start      -> node dist/server/index.js (serve dist/client)
 import http from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { codexDirsRefused, isDefaultDir } from './accounts/detect';
 import { AccountsService } from './accounts/service';
-import { isTruthy, loadConfig, messagesOffReason, terminalOffReason, worldSocketUrl } from './config';
+import { isTruthy, loadConfig, messagesOffReason, terminalOffReason } from './config';
 import { createApiHandler, sendJson } from './http/app';
 import { createRequestGuard, isLoopbackHost } from './http/guard';
 import { createRemoteGate, isRemoteRequest, loadSecret, RemoteSessions, startRemoteListener, type RemoteListener } from './http/remote';
@@ -34,13 +35,12 @@ import { createMessageRoutes } from './messages/http';
 import { MessageRegistry } from './messages/registry';
 import type { CodexLive } from './sources/codex/live';
 import { ClaudeWatcher } from './sources/watcher';
-import { discoverCodexDirs } from './sources/codex/accounts';
+import { defaultCodexHome, discoverCodexDirs } from './sources/codex/accounts';
 import { CodexHistory } from './sources/codex/history';
 import { CodexSource } from './sources/codex/source';
-import { createBuildReader, readBuildInfo } from './build';
+import { createBuildReader } from './build';
 import { UpdateChecker } from './updates/checker';
-import { getLocale, tr } from '../shared/i18n';
-import type { WorldLocale } from '../shared/world/protocol';
+import { tr } from '../shared/i18n';
 import { createCliRunner, createOpener, SpawnService } from './spawn/spawn';
 import { runnableClaudeBin } from './claude-bin';
 import { AttachmentStore } from './spawn/attachments';
@@ -50,14 +50,10 @@ import { DictationService } from './dictation/dictation';
 import { createWhisperTranscriber, findWhisper } from './dictation/whisper';
 import { DeliveryIndex } from './deliveries/deliveries';
 import { FileFetcher } from './deliveries/fetcher';
-import { WorldClient } from './world/client';
-import { createWorldRoutes } from './world/http';
-import { WorldService } from './world/service';
-import { WorldSettingsStore } from './world/settings';
-import { OwnerSocial } from './world/social';
-import { BuildingTokens } from './world/tokens';
-import { BuildingUplink } from './world/uplink';
-import { WorldViewer } from './world/viewer';
+import { CompanyStore } from './company/store';
+import { AutomaticMemory } from './company/automatic-memory';
+import { TeamChatStore } from './company/team-chat';
+import { CodexSettingsClient } from './codex/settings';
 
 const config = loadConfig();
 const startedAt = Date.now();
@@ -74,6 +70,8 @@ if (legacyEnv) log.warn(legacyEnv);
 
 const names = new NameStore(join(config.dataDir, 'names.json'));
 names.load();
+const company = new CompanyStore(join(config.dataDir, 'company.json'), process.env.HABBLAUD_COMPANY_NAME ?? 'William Pereira');
+const teamChat = new TeamChatStore(join(config.dataDir, 'team-chat.json'));
 // Nomes de sala escolhidos pelo usuário (botão direito > Renomear).
 const roomAliases = new RoomAliases(join(config.dataDir, 'rooms.json'));
 roomAliases.load();
@@ -89,22 +87,6 @@ const updates = new UpdateChecker({
   onChange: () => late.office?.markDirty(),
 });
 updates.load();
-// Habblaud World (server/world/): a conta e o personagem neste computador. Sem HABBLAUD_WORLD_URL fica desligado (nada
-// sai do computador); HABBLAUD_WORLD=0 esconde tudo (rotas 404 e nada na interface).
-const worldStore = new WorldSettingsStore(join(config.dataDir, 'world.json'));
-if (config.world.enabled && config.world.url) worldStore.load();
-// O social leve do dono (world/social.ts): likes do dia, "enquanto você estava fora", batidas na porta e bloqueados.
-const worldSocial = config.world.enabled ? new OwnerSocial({ session: () => worldStore.get()?.deviceId, onChange: () => late.office?.markDirty() }) : undefined;
-const world = config.world.enabled
-  ? new WorldService({
-      config: config.world,
-      terminal: config.terminal,
-      store: worldStore,
-      client: config.world.url ? new WorldClient({ baseUrl: config.world.url, version: config.version }) : undefined,
-      onChange: () => late.office?.markDirty(),
-      social: worldSocial,
-    })
-  : undefined;
 const accounts = new AccountsService({
   dirs: config.claudeDirs,
   home: config.home,
@@ -114,6 +96,7 @@ const accounts = new AccountsService({
 });
 const office = new Office({
   names,
+  companyName: () => company.name(),
   roomAlias: (path) => roomAliases.get(path),
   version: config.version,
   // No modo dev o Vite serve o cliente direto do código-fonte: não há build para comparar.
@@ -127,7 +110,6 @@ const office = new Office({
   messages: config.messages ? () => late.messages?.reachable() ?? new Set() : undefined,
   ptys: () => (late.ptys ? { status: late.ptys.status(), list: late.ptys.list() } : { status: { enabled: false, reason: late.ptyOff ?? tr('desligado') }, list: [] }),
   updates: () => updates.status(),
-  world: () => world?.meta() ?? { enabled: false, configured: false, state: 'off' },
 });
 // Fontes de agentes, uma por ferramenta (sources/source.ts): a do Claude Code e, depois dela, a do Codex (quando há
 // pastas do Codex; HABBLAUD_CODEX=0 desliga), com o histórico dela no HistorySet abaixo e as contas registradas por
@@ -149,42 +131,6 @@ const hub = new Hub(office, {
 // "Meu dia": amostra o escritório a cada segundo e persiste em <dataDir>/stats/ (ver history/daystats.ts).
 const stats = new DayStatsService({ dir: join(config.dataDir, 'stats'), snapshot: () => hub.current() });
 stats.load();
-// O prédio no Habblaud World (world/uplink.ts): só com HABBLAUD_WORLD_URL. Conecta sozinho com a conta aprovada, o
-// personagem criado, a trava do terminal e sem pausa; o pacote sai só da projeção (shared/world/projection.ts).
-const worldTokens = new BuildingTokens({ stats });
-const worldUplink =
-  world && config.world.url
-    ? new BuildingUplink({
-        url: worldSocketUrl(config.world.url),
-        version: config.version,
-        build: () => {
-          const b = readBuildInfo(config.rootDir);
-          return { commit: b.commit, dirty: b.dirty };
-        },
-        locale: () => getLocale() as WorldLocale,
-        store: worldStore,
-        canAct: () => config.terminal,
-        agents: () => office.list(),
-        subscribe: (cb) => office.onChange(cb),
-        booting: () => office.isBooting(),
-        tokens: () => worldTokens.read(),
-        lastFile: join(config.dataDir, 'world-last-uplink.json'),
-        onGoodbye: (reason) => world.goodbye(reason),
-        onLeft: () => world.leftElsewhere(),
-        onChange: () => office.markDirty(),
-      })
-    : undefined;
-if (world && worldUplink) world.attachUplink(worldUplink);
-// A cena Mundo (world/viewer.ts): a cidade pela mesma conexão do prédio, só com a cena aberta no navegador.
-const worldViewer = worldUplink ? new WorldViewer() : undefined;
-if (worldUplink && worldViewer) {
-  worldViewer.attach(worldUplink);
-  worldUplink.attachCity(worldViewer);
-}
-if (worldUplink && worldSocial) {
-  worldSocial.attach(worldUplink);
-  worldUplink.attachOwner(worldSocial);
-}
 // Terminal: só existe com bind local (ver terminalOffReason em config.ts).
 // Cada agente com o parser da ferramenta dele (o do Claude Code por padrão).
 const terminals = config.terminal
@@ -211,6 +157,8 @@ const deliveries = history
       agentName: (id) => office.list().find((a) => a.id === id)?.name,
     })
   : undefined;
+const automaticMemory = deliveries ? new AutomaticMemory(deliveries, company, (agentId) => office.get(agentId)?.roomId) : undefined;
+automaticMemory?.start();
 const deliveryFiles = deliveries
   ? new FileFetcher({
       direct: !config.inDocker,
@@ -225,7 +173,7 @@ const deliveryFiles = deliveries
   : undefined;
 // Linha do tempo do timelapse: grava cada snapshot novo (com throttle) em <dataDir>/timeline.
 const timelineDir = join(config.dataDir, TIMELINE_DIR);
-const timeline = config.timeline ? new TimelineRecorder({ dir: timelineDir }) : undefined;
+const timeline = config.timeline ? new TimelineRecorder({ dir: timelineDir, retentionDays: config.timelineRetentionDays }) : undefined;
 if (timeline) hub.onSnapshot((snap) => timeline.ingest(snap));
 // Responder pelo escritório (hook PermissionRequest): age sobre as sessões, então segue a mesma trava.
 const permissions = config.terminal
@@ -246,9 +194,9 @@ late.permissions = permissions;
 // seguem a mesma trava (e HABBLAUD_MENSAGENS=0 desliga só elas). Ao Codex vão por `codex queue` (messages/codex.ts):
 // fora do Docker o próprio servidor roda o comando (HABBLAUD_CODEX_BIN ou `codex` do PATH); no Docker, o auxiliar do
 // host (npm run codex:bridge).
-const codexBin = config.messages && !config.inDocker ? findCodexBin(process.env) : undefined;
-// Terminal interativo e Novo agente: os dois rodam o Claude Code neste computador, então pedem a mesma liberação,
-// HABBLAUD_PTY=1 (aceita os mesmos valores do HABBLAUD_TERMINAL).
+const codexBin = !config.inDocker ? findCodexBin(process.env) : undefined;
+const codexSettings = codexBin ? new CodexSettingsClient(codexBin, (account) => accounts.entriesOf('codex').find((entry) => entry.id === account)?.detected.configDir) : undefined;
+// Sessões interativas do Codex e Claude Code pedem a mesma liberação local, HABBLAUD_PTY=1.
 const ptyFlag = process.env.HABBLAUD_PTY?.trim();
 const ptyOptIn = isTruthy(ptyFlag);
 // Novo agente pelo escritório (sessão do Claude Code em segundo plano, ou a tela do app do Claude preenchida): a
@@ -267,6 +215,15 @@ const dictation = config.messages
 const messages = config.messages
   ? new MessageRegistry({
       office,
+      companyName: () => company.name(),
+      memoryOf: (agent) => {
+        const profile = company.profile(`${agent.provider ?? 'claude'}:${agent.account}:${agent.sessionId}`);
+        const role = [profile.name && `Nome de trabalho: ${profile.name}`, profile.specialty && `Especialidade: ${profile.specialty}`, profile.instructions && `Instruções: ${profile.instructions}`, profile.limits && `Limites: ${profile.limits}`].filter(Boolean).join('\n');
+        const shared = company.sharedMemory().text;
+        const memory = company.memoryText(agent);
+        const learning = 'ATUALIZAÇÃO AUTOMÁTICA DE MEMÓRIA: ao concluir a tarefa, inclua no fim da resposta um marcador HTML invisível somente se houver aprendizado durável novo, usando exatamente uma linha: <!-- HABBLAUD_MEMORY:{"scope":"conversation","text":"aprendizado curto"} -->. Use scope "company" apenas para contexto estável útil a toda a equipe. Não registre segredos, credenciais, dados pessoais sensíveis, suposições ou detalhes temporários da tarefa. Não repita aprendizados já presentes na memória. Sem aprendizado novo, não emita marcador. O pedido atual de William sempre prevalece.';
+        return [shared && `MEMÓRIA COMPARTILHADA DA EMPRESA:\n${shared}`, role && `PAPEL DEFINIDO PELO RESPONSÁVEL:\n${role}`, memory && `MEMÓRIA DESTA CONVERSA:\n${memory}`, learning].filter(Boolean).join('\n\n');
+      },
       demoAgent: (id) => office.demoAgent(id),
       demoDeliver: (id, text) => office.deliverDemoMessage(id, text),
       codex: {
@@ -277,8 +234,7 @@ const messages = config.messages
   : undefined;
 late.messages = messages;
 
-// Terminal interativo (abrir/assumir sessões e encerrar agentes): opt-in com HABBLAUD_PTY=1, só com bind local, fora
-// do Docker, com node-pty e o executável do claude no PATH.
+// Sessões interativas (abrir sessões Codex/Claude; assumir e encerrar Claude): opt-in, só com bind local e fora do Docker.
 const claudeBinSetting = process.env.HABBLAUD_CLAUDE_BIN?.trim();
 const claudeBin = claudeBinFrom();
 let spawnPty: SpawnPty | null = null;
@@ -287,8 +243,7 @@ let ptyOff: string | undefined;
 if (!ptyOptIn) ptyOff = ptyFlag ? tr('desligado por HABBLAUD_PTY={0}', [ptyFlag]) : tr('desligado (ligue com HABBLAUD_PTY=1)');
 else if (config.inDocker) ptyOff = tr('indisponível no Docker (rode com npm start)');
 else if (!config.terminal) ptyOff = tr('mesma trava do terminal ({0})', [terminalOffReason(process.env, config.host, config.inDocker)]);
-else if (!claudeBin) ptyOff = claudeBinSetting ? tr('HABBLAUD_CLAUDE_BIN não encontrado no PATH ({0})', [claudeBinSetting]) : tr('executável "claude" não encontrado no PATH (defina HABBLAUD_CLAUDE_BIN)');
-else if (!isExecutableFile(claudeBin)) ptyOff = tr('o executável do Claude Code não roda: {0} (confira o HABBLAUD_CLAUDE_BIN)', [claudeBin]);
+else if ((!claudeBin || !isExecutableFile(claudeBin)) && (!codexBin || !isExecutableFile(codexBin))) ptyOff = tr('não encontrei um executável do Codex nem do Claude Code (configure HABBLAUD_CODEX_BIN ou HABBLAUD_CLAUDE_BIN)');
 else {
   const loaded = await loadPty();
   spawnPty = loaded.spawn;
@@ -302,12 +257,14 @@ else {
 const ptys = spawnPty
   ? new PtyManager({
       spawn: spawnPty,
+      codexBin,
       claudeBin: claudeBin ?? 'claude',
-      accounts: () => accounts.entries().map((a) => ({ id: a.id, dir: a.dir, isDefault: isDefaultDir(a.dir, config.home) })),
+      accounts: () => [...accounts.entriesOf('claude'), ...accounts.entriesOf('codex')].map((a) => ({ id: a.id, dir: a.dir, provider: a.provider, isDefault: a.provider === 'codex' ? resolve(a.dir) === resolve(defaultCodexHome(process.env, config.home)) : isDefaultDir(a.dir, config.home) })),
       agent: (id) => {
         const a = office.get(id);
-        return a && { id: a.id, kind: a.kind, account: a.account, sessionId: a.sessionId, cwd: office.roomPath(a.roomId) };
+        return a && { id: a.id, kind: a.kind, account: a.account, sessionId: a.sessionId, cwd: office.roomPath(a.roomId), provider: a.provider === 'codex' ? 'codex' : 'claude', startedAt: a.startedAt };
       },
+      agents: () => office.list().map((a) => ({ id: a.id, kind: a.kind, account: a.account, sessionId: a.sessionId, cwd: office.roomPath(a.roomId), provider: a.provider === 'codex' ? 'codex' : 'claude', startedAt: a.startedAt })),
       onChange: () => office.markDirty(),
       createScreen: ptyScreen,
     })
@@ -328,7 +285,6 @@ permissions?.start();
 messages?.start();
 stats.start();
 updates.start();
-worldUplink?.start();
 const ticker = setInterval(() => {
   try {
     office.tick();
@@ -338,6 +294,8 @@ const ticker = setInterval(() => {
 }, 250);
 
 const api = createApiHandler({
+  company,
+  teamChat,
   renameRoom: (id, name) => {
     const path = office.roomPath(id);
     if (!path) return undefined;
@@ -354,7 +312,7 @@ const api = createApiHandler({
   terminal: config.terminal,
   terminals,
   sessions: history,
-  timeline: createTimelineHandler({ dir: timelineDir, recording: !!timeline }),
+  timeline: createTimelineHandler({ dir: timelineDir, recording: !!timeline, onDelete: (day) => timeline?.resetAfterDelete(day) }),
   permissions: permissions ? createPermissionRoutes(permissions) : undefined,
   messages: messages ? createMessageRoutes(messages) : undefined,
   pty: ptys ? createPtyRoutes(ptys) : undefined,
@@ -371,10 +329,11 @@ const api = createApiHandler({
     return recentFolders(history ? await history.list().catch(() => []) : [], rooms);
   },
   codexLive,
+  codexSettings,
+  codexAccounts: () => accounts.entriesOf('codex').map((entry) => ({ id: entry.id, name: entry.detected.name })),
   stats,
   updates,
   remote: config.remote ? { is: isRemoteRequest, allows: (f) => config.remote!.allow.has(f) } : undefined,
-  world: world ? createWorldRoutes(world, worldViewer, worldSocial) : undefined,
 });
 
 const server = http.createServer();
@@ -467,9 +426,45 @@ if (config.remote) {
   log.warn(`   ${config.remoteWarning}.`);
 }
 
+
+const instanceFilePath = join(config.home, '.habblaud', 'instance.json');
+
+function registerActiveInstance(info: { pid: number; port: number; url: string; startedAt: number; version: string }): void {
+  try {
+    const dir = join(config.home, '.habblaud');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(instanceFilePath, JSON.stringify(info, null, 2), 'utf8');
+  } catch (err) {
+    log.warn(`Não foi possível salvar registro de instância ativa: ${err}`);
+  }
+}
+
+function unregisterActiveInstance(): void {
+  try {
+    if (fs.existsSync(instanceFilePath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(instanceFilePath, 'utf8'));
+        if (raw.pid === process.pid) fs.unlinkSync(instanceFilePath);
+      } catch {
+        fs.unlinkSync(instanceFilePath);
+      }
+    }
+  } catch {
+    // silencioso no encerramento
+  }
+}
+process.on('exit', () => unregisterActiveInstance());
+
 server.listen(config.port, config.host, () => {
   const host = config.host === '0.0.0.0' || config.host === '::' ? 'localhost' : config.host;
   log.info(tr('🏢 Habblaud {0}{1}{2} em http://{3}:{4}', [config.version, config.dev ? ' (dev)' : '', config.inDocker ? ' (docker)' : '', host, config.port]));
+  registerActiveInstance({
+    pid: process.pid,
+    port: config.port,
+    url: `http://${host}:${config.port}`,
+    startedAt,
+    version: config.version,
+  });
   const list = accounts.entries();
   if (!list.length) log.warn(tr('Nenhuma pasta do Claude Code encontrada (defina HABBLAUD_CLAUDE_DIRS).'));
   for (const dir of codexDirsRefused(process.env, config.home)) {
@@ -493,16 +488,18 @@ server.listen(config.port, config.host, () => {
   if (office.isDemo()) log.info(tr('   Modo demonstração ligado (agentes simulados misturados aos reais).'));
   if (config.terminal) log.info(tr('   Terminal: ligado (acesso só local).'));
   else log.info(tr('   Terminal: desligado ({0}).', [terminalOffReason(process.env, config.host, config.inDocker)]));
-  log.info(ptys ? tr('   Terminal interativo: ligado ({0}).', [claudeBin]) : tr('   Terminal interativo: {0}.', [ptyOff ?? tr('desligado')]));
+  const interactiveTools = [codexBin ? `Codex: ${codexBin}` : '', claudeBin ? `Claude Code: ${claudeBin}` : ''].filter(Boolean).join(' · ');
+  log.info(ptys ? tr('   Terminal interativo: ligado ({0}).', [interactiveTools || tr('nenhuma ferramenta encontrada')]) : tr('   Terminal interativo: {0}.', [ptyOff ?? tr('desligado')]));
   log.info(
     !spawn
       ? tr('   Novo agente: desligado ({0}).', [!ptyOptIn ? tr('ligue com HABBLAUD_PTY=1') : tr('mesma trava das mensagens')])
       : config.inDocker
         ? tr('   Novo agente: ligado, pelo auxiliar do host (deixe npm run codex:bridge rodando no computador).')
         : spawnBin
-          ? tr('   Novo agente: ligado ({0} --bg; pasta ainda não confiável abre no app do Claude).', [spawnBin])
-          : tr('   Novo agente: ligado, só pelo app do Claude (claude não encontrado no PATH).'),
+          ? tr('   Novo agente Claude Code: ligado ({0} --bg; pasta ainda não confiável abre no app do Claude).', [spawnBin])
+          : tr('   Novo agente Claude Code: ligado, só pelo app do Claude (claude não encontrado no PATH).'),
   );
+  log.info(tr('   Novo agente Codex: {0}.', [ptys && codexBin ? tr('ligado no terminal interativo') : tr('indisponível (confira HABBLAUD_PTY, node-pty e o Codex CLI)')]));
   log.info(timeline ? tr('   Linha do tempo (timelapse): gravando em {0}.', [timelineDir]) : tr('   Linha do tempo (timelapse): gravação desligada (HABBLAUD_TIMELINE).'));
   log.info(tr('   Responder pelo escritório: {0}.', [config.terminal ? tr('ligado (precisa do mod: npm run mod:install; ou do hook antigo: npm run hooks:install)') : tr('desligado (mesma trava do terminal)')]));
   log.info(
@@ -519,18 +516,6 @@ server.listen(config.port, config.host, () => {
           : tr('   Mensagens ao Codex: sem o binário do Codex (codex no PATH ou HABBLAUD_CODEX_BIN); o auxiliar npm run codex:bridge também serve.'),
     );
   }
-  if (config.world.warning) log.warn(`   ${config.world.warning}.`);
-  log.info(
-    !world
-      ? tr('   Habblaud World: escondido (HABBLAUD_WORLD=0).')
-      : !config.world.url
-        ? tr('   Habblaud World: desligado (sem HABBLAUD_WORLD_URL).')
-        : tr('   Habblaud World: {0}, conta neste computador: {1}{2}.', [
-            config.world.url,
-            world.state(),
-            config.terminal ? '' : tr(' (só leitura: a trava do terminal está desligada)'),
-          ]),
-  );
   log.info(
     updates.enabled
       ? tr('   Versão nova: verificando as releases de github.com/{0} a cada 6 h.', [config.repo])
@@ -540,6 +525,7 @@ server.listen(config.port, config.host, () => {
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
+  unregisterActiveInstance();
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(tr('Encerrando ({0})…', [signal]));
@@ -554,9 +540,6 @@ function shutdown(signal: string): void {
   messages?.stop();
   ptys?.stopAll();
   updates.stop();
-  worldViewer?.stop();
-  worldUplink?.stop();
-  world?.stop();
   names.flush();
   void closeVite?.();
   remoteListener?.close();

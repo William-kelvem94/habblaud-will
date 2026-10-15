@@ -19,6 +19,7 @@ import type { AccountUsage, Activity, AgentStats, TaskItem, TaskStatus, UsageWin
 import { detectGitHubResult, githubCallOf } from '../github';
 import type { ParsedActivity } from '../transcript';
 import { tr } from '../../../shared/i18n';
+import { codexStandardCostUSD, type CodexTokenUsage } from '../../../shared/codex-pricing';
 
 type Rec = Record<string, unknown>;
 
@@ -382,6 +383,10 @@ export interface CodexState {
   title?: string;
   tasks: TaskItem[];
   stats: AgentStats;
+  /** Totais cumulativos do último token_count, usados para precificar só tokens novos sem duplicar eventos repetidos. */
+  pricingUsage?: CodexTokenUsage;
+  /** IDs de chamadas spawn_agent já contabilizadas, para contar no início sem duplicar na conclusão. */
+  subagentCalls: Set<string>;
   /** Turno aberto (task_started sem task_complete/turn_aborted); undefined = nenhum evento de turno visto. */
   turnOpen?: boolean;
   firstAt?: number;
@@ -395,7 +400,7 @@ export interface CodexState {
 }
 
 export function createCodexState(meta?: RolloutMeta): CodexState {
-  const s: CodexState = { tasks: [], stats: { toolCalls: 0, tokensIn: 0, tokensOut: 0, subagents: 0 }, pending: new Map() };
+  const s: CodexState = { tasks: [], stats: { toolCalls: 0, tokensIn: 0, tokensOut: 0, subagents: 0 }, subagentCalls: new Set(), pending: new Map() };
   if (meta) applyMeta(s, meta);
   return s;
 }
@@ -528,6 +533,13 @@ class RolloutLineParser {
     this.out.changed = true;
   }
 
+  private countSubagent(id?: string): void {
+    if (id && this.s.subagentCalls.has(id)) return;
+    if (id) this.s.subagentCalls.add(id);
+    this.s.stats.subagents++;
+    this.changed();
+  }
+
   private paginated(): boolean {
     return this.s.mode === 'paginated';
   }
@@ -645,7 +657,8 @@ class RolloutLineParser {
   }
 
   private tokens(p: Rec): void {
-    const total = rec(rec(p.info)?.total_token_usage);
+    const info = rec(p.info);
+    const total = rec(info?.total_token_usage);
     if (total) {
       // Cumulativo: atribui (o input já inclui o cache; o output já inclui o raciocínio).
       const tin = num(total.input_tokens) ?? 0;
@@ -653,6 +666,28 @@ class RolloutLineParser {
       if (tin !== this.s.stats.tokensIn || tout !== this.s.stats.tokensOut) {
         this.s.stats.tokensIn = tin;
         this.s.stats.tokensOut = tout;
+        this.changed();
+      }
+      const current: CodexTokenUsage = {
+        input: num(total.input_tokens) ?? 0,
+        cachedInput: num(total.cached_input_tokens) ?? 0,
+        cacheWriteInput: num(total.cache_write_input_tokens) ?? 0,
+        output: num(total.output_tokens) ?? 0,
+      };
+      const previous = this.s.pricingUsage;
+      const last = rec(info?.last_token_usage);
+      const usage: CodexTokenUsage = previous && current.input >= previous.input && current.cachedInput >= previous.cachedInput && current.cacheWriteInput >= previous.cacheWriteInput && current.output >= previous.output
+        ? { input: current.input - previous.input, cachedInput: current.cachedInput - previous.cachedInput, cacheWriteInput: current.cacheWriteInput - previous.cacheWriteInput, output: current.output - previous.output }
+        : {
+            input: num(last?.input_tokens) ?? current.input,
+            cachedInput: num(last?.cached_input_tokens) ?? current.cachedInput,
+            cacheWriteInput: num(last?.cache_write_input_tokens) ?? current.cacheWriteInput,
+            output: num(last?.output_tokens) ?? current.output,
+          };
+      this.s.pricingUsage = current;
+      const amount = codexStandardCostUSD(this.s.model, usage);
+      if (amount !== undefined && amount > 0) {
+        this.s.stats.costUSD = Math.round(((this.s.stats.costUSD ?? 0) + amount) * 1e8) / 1e8;
         this.changed();
       }
     }
@@ -741,10 +776,7 @@ class RolloutLineParser {
       case 'CollabAgentToolCall': {
         this.sawPaginated();
         const tool = str(item.tool) ?? 'spawn_agent';
-        if (tool === 'spawn_agent') {
-          this.s.stats.subagents++;
-          this.changed();
-        }
+        if (tool === 'spawn_agent') this.countSubagent(id ?? str(item.call_id));
         this.done(id);
         const { desc, tool: name } = describeCodexTool(tool, { prompt: item.prompt });
         this.push(desc, { key: id, tool: name, callId: id });
@@ -845,6 +877,7 @@ class RolloutLineParser {
         const callId = str(p.call_id) ?? str(p.id);
         const name = str(p.name) ?? 'ferramenta';
         const input = p.type === 'custom_tool_call' ? { input: p.input, command: p.input } : parseArguments(p.arguments);
+        if (name === 'spawn_agent') this.countSubagent(callId);
         if (callId) {
           this.s.pending.set(callId, name);
           if (this.s.pending.size > MAX_PENDING) this.s.pending.delete(this.s.pending.keys().next().value as string);

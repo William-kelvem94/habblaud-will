@@ -1,6 +1,7 @@
 // Histórico do terminal do Codex: listagem dos rollouts recentes e a sessão resolvida com segurança.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { setQuiet } from '../../log';
 import { codexHome, R, SOURCES, threadId } from '../../test/codex-fixtures';
@@ -31,6 +32,20 @@ function setup() {
 }
 
 describe('histórico do Codex', () => {
+  it('lista e abre rollouts compactados com proteção contra arquivo malformado', async () => {
+    const { home, history, now } = setup();
+    const dir = join(home.dir, 'sessions', '2026', '10', '01');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-01T09-00-00-${B}.jsonl.zst`);
+    const rollout = `${R.meta(B, { at: now - 60_000, cwd: '/projetos/zstd' })}\n${R.user(B, 't', 'u', 'conversa compactada', now - 50_000)}\n`;
+    writeFileSync(file, zstdCompressSync(Buffer.from(rollout)));
+    const found = history.resolve('.codex', B);
+    expect('data' in found && found.data.toString()).toContain('conversa compactada');
+    expect((await history.list()).find((x) => x.sessionId === B)?.title).toBe('conversa compactada');
+    writeFileSync(file, 'not zstd');
+    expect(history.resolve('.codex', B)).toMatchObject({ status: 422 });
+  });
+
   it('lista os rollouts dos últimos 7 dias (sessions/ e archived_sessions/), sem subagentes e internos', async () => {
     const { home, history, now, open } = setup();
     home.rollout(A, [R.meta(A, { at: now - 3_600_000, cwd: '/projetos/loja' }), R.user(A, 't', 'u', 'Arrume o checkout', now - 3_590_000), R.agent(A, 't', 'a', 'ok', now - 3_000_000)]);
@@ -57,7 +72,7 @@ describe('histórico do Codex', () => {
     expect(list[2].agentId).toBeUndefined();
   });
 
-  it('resolve: só dentro da pasta da conta, com o parser do Codex; id inválido 400; .zst e desconhecida 404', ({ skip }) => {
+  it('resolve: só dentro da pasta da conta, com parser e leitura zstd do Codex', async ({ skip }) => {
     const { home, history } = setup();
     const path = home.rollout(A, [R.meta(A), R.user(A, 't', 'u', 'oi')]);
     const r = history.resolve('.codex', A);
@@ -69,8 +84,12 @@ describe('histórico do Codex', () => {
     expect(history.resolve('.codex', B)).toMatchObject({ status: 404 });
     const dir = join(home.dir, 'sessions', '2026', '10', '01');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-10-01T09-00-00-${B}.jsonl.zst`), 'zst');
-    expect(history.resolve('.codex', B)).toMatchObject({ status: 404, error: expect.stringContaining('.zst') });
+    const compressed = join(dir, `rollout-2026-10-01T09-00-00-${B}.jsonl.zst`);
+    const rollout = `${R.meta(B, { cwd: '/projetos/zstd' })}\n${R.user(B, 't', 'u', 'conversa compactada', Date.now())}\n`;
+    writeFileSync(compressed, zstdCompressSync(Buffer.from(rollout)));
+    const decoded = history.resolve('.codex', B);
+    expect('data' in decoded && decoded.data.toString()).toContain('conversa compactada');
+    expect((await history.list()).find((x) => x.sessionId === B)?.title).toBe('conversa compactada');
     // Link para fora da pasta da conta: não serve.
     const outside = tempDir();
     cleanups.push(outside.cleanup);

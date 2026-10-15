@@ -84,6 +84,13 @@ export class PtyPane {
     this.term.focus();
   }
 
+  /** Envia um comando slash ao CLI no terminal. O próprio Codex valida e executa o comando. */
+  sendCommand(command: string): void {
+    if (!this.id || this.exited || !/^\/[a-z][a-z0-9_-]*$/.test(command)) return;
+    this.send(`${command}\r`);
+    this.term.focus();
+  }
+
   /** Reajusta colunas/linhas ao tamanho do elemento (`force` reenvia ao servidor mesmo sem mudança). */
   refit(force = false): void {
     if (!this.el.isConnected || this.el.clientWidth < 40 || this.el.clientHeight < 40) return;

@@ -138,6 +138,18 @@ export class TimelineRecorder {
     return { day: this.day, bytes: this.bytes, limited: this.limited, failing: this.failedAt !== null, slow: this.bytes >= this.softBytes };
   }
 
+  /** Recria um keyframe se o arquivo que o recorder estava atualizando foi apagado pela interface. */
+  resetAfterDelete(day?: string): void {
+    if (day && day !== this.day) return;
+    this.written = null;
+    this.bytes = 0;
+    this.lastKeyAt = 0;
+    this.needKeyframe = true;
+    this.pending = !!this.latest;
+    this.limited = false;
+    if (this.latest) this.tick();
+  }
+
   // ---------------------------------------------------------------- internos
 
   private pump(): void {

@@ -11,14 +11,13 @@
   "homepage": "https://github.com/marmottajr/habblaud#readme",
   "type": "module",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.15"
   },
   "scripts": {
     "dev": "tsx watch --clear-screen=false --exclude './client/**' server/index.ts --dev",
     "dev:client": "vite --config vite.config.ts",
     "demo": "HABBLAUD_DEMO=1 npm run dev",
     "demo:timeline": "tsx scripts/demo-timeline.ts",
-    "shots:world": "node scripts/world-shots.mjs",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build --config vite.config.ts",
     "build:server": "node scripts/build-server.mjs",
@@ -42,8 +41,11 @@
     "codex:uninstall": "tsx scripts/codex-install.ts uninstall",
     "codex:status": "tsx scripts/codex-install.ts status",
     "codex:bridge": "tsx scripts/codex-bridge.ts",
+    "mcp:team": "tsx mod/habblaud-equipe/index.ts",
+    "mcp:team:install": "tsx scripts/team-mcp-install.ts",
     "remote:setup": "tsx scripts/remote-setup.ts",
     "remote:mdns": "tsx scripts/remote-mdns.ts",
+    "vscode:build": "node ./node_modules/esbuild/bin/esbuild extensions/vscode/src/extension.ts --bundle --outfile=extensions/vscode/dist/extension.js --external:vscode --format=cjs --platform=node",
     "release": "tsx scripts/release.ts"
   },
   "devDependencies": {
@@ -62,5 +64,9 @@
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "node-pty": "^1.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
   }
 }

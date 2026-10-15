@@ -24,6 +24,8 @@ interface Box {
 export interface MovableOptions {
   /** Chave no localStorage. */
   key: string;
+  /** Largura mínima deste painel (os outros continuam usando o mínimo padrão). */
+  minWidth?: number;
   /** Pode soltar agora? (false em telas estreitas). */
   enabled?: () => boolean;
   /** Chamado ao soltar ou devolver o painel ao lugar. */
@@ -152,10 +154,10 @@ export class Movable {
       const dx = e.clientX - z.sx;
       const dy = e.clientY - z.sy;
       const b = { ...z.start };
-      if (edge.includes('e')) b.w = Math.max(MIN_W, z.start.w + dx);
+      if (edge.includes('e')) b.w = Math.max(this.minWidth(), z.start.w + dx);
       if (edge.includes('s')) b.h = Math.max(MIN_H, z.start.h + dy);
       if (edge.includes('w')) {
-        b.w = Math.max(MIN_W, z.start.w - dx);
+        b.w = Math.max(this.minWidth(), z.start.w - dx);
         b.x = z.start.x + z.start.w - b.w;
       }
       if (edge.includes('n')) {
@@ -232,9 +234,13 @@ export class Movable {
     return (parseFloat(s.getPropertyValue('--top-h')) || 0) + (parseFloat(s.getPropertyValue('--gap')) || 0);
   }
 
+  private minWidth(): number {
+    return Math.min(this.opts.minWidth ?? MIN_W, innerWidth);
+  }
+
   /** Aplica a caixa, mantendo um pedaço da janela (e a barra) dentro da tela. */
   private apply(b: Box): void {
-    const w = Math.max(MIN_W, Math.min(b.w, innerWidth));
+    const w = Math.max(this.minWidth(), Math.min(b.w, innerWidth));
     const x = Math.min(innerWidth - KEEP_VISIBLE, Math.max(KEEP_VISIBLE - w, b.x));
     // O limite de cima vence o de baixo: numa janela baixa demais, a barra continua alcançável.
     const y = Math.max(this.minTop(), Math.min(innerHeight - MIN_H, b.y));

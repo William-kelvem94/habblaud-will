@@ -5,7 +5,6 @@
 // Renomear/remover campos quebra servidor, mundo e UI ao mesmo tempo.
 
 import type { AppearanceParts } from './appearance';
-import type { WorldMeta } from './world/api';
 
 export type AgentKind = 'main' | 'sub';
 
@@ -115,6 +114,13 @@ export interface TaskItem {
   activeForm?: string;
 }
 
+/** Meta persistente do Codex (/goal), ligada à conversa que a definiu. */
+export interface AgentGoal {
+  objective: string;
+  status: 'active' | 'paused' | 'blocked' | 'usage_limited' | 'budget_limited' | 'complete';
+  updatedAt: number;
+}
+
 export interface AgentStats {
   toolCalls: number;
   /** input + cache read + cache creation. */
@@ -158,6 +164,8 @@ export interface AgentInfo {
   /** Últimas atividades, da mais antiga para a mais recente (máx. ~30). */
   recent: Activity[];
   tasks: TaskItem[];
+  /** Meta persistente do Codex (/goal), quando esta conversa tem uma. */
+  goal?: AgentGoal;
   /** Shells rodando que o agente espera: em segundo plano e o comando em primeiro plano ainda sem resultado. */
   shells?: ShellJob[];
   model?: string;
@@ -207,6 +215,10 @@ export interface RoomInfo {
   createdAt: number;
   /** Efeito visual temporário na sala (eventos do GitHub detectados nos transcripts; ver shared/github.ts). */
   effect?: RoomEffect;
+  /** (Opcional, aditivo) Identificador do workspace/monorepo raiz compartilhado. */
+  workspaceId?: string;
+  /** (Opcional, aditivo) Nome da pasta raiz do workspace/monorepo. */
+  workspaceName?: string;
 }
 
 /**
@@ -340,6 +352,8 @@ export interface OfficeSnapshot {
   accounts: AccountInfo[];
   meta: {
     demo: boolean;
+    /** Nome da empresa proprietária deste escritório. */
+    companyName?: string;
     sources: SourceInfo[];
     startedAt: number;
     version: string;
@@ -365,15 +379,6 @@ export interface OfficeSnapshot {
     pty?: PtyStatus;
     /** Verificação de versão nova no GitHub (ausente nos testes e no timelapse). */
     updates?: UpdateStatus;
-    /**
-     * Habblaud World (server/world/): `enabled` = a seção aparece (HABBLAUD_WORLD não é 0 e HABBLAUD_WORLD_URL é válida;
-     * sem a URL o recurso fica desligado e nada do World aparece); `configured` = HABBLAUD_WORLD_URL válida; `state` = a
-     * conta neste computador; `building` (aditivo, só com a conta aprovada e o personagem criado) = o resumo do prédio
-     * no mundo: conectado, pausado, andares e agentes da última remessa e a hora dela, se saiu do mundo e se o servidor
-     * do mundo o parou (sem o motivo, que só vai no status). Nada da conta além disso (o snapshot também vai ao celular
-     * e à linha do tempo). Ausente nos testes e no timelapse.
-     */
-    world?: WorldMeta;
   };
 }
 
@@ -390,11 +395,6 @@ export interface AccessInfo {
   terminal: boolean;
   /** Pode abrir agentes novos no app do Claude (POST /api/spawn). */
   spawn: boolean;
-  /**
-   * Pode usar a conta do Habblaud World (/api/world/*): recurso ligado (HABBLAUD_WORLD), trava do terminal e porta local
-   * com Host local. Ausente em servidores antigos.
-   */
-  world?: boolean;
 }
 
 export interface FeedItem {
@@ -715,10 +715,11 @@ export interface PtyStatus {
 /** Terminal interativo aberto pelo Habblaud (node-pty no servidor, xterm.js no navegador). */
 export interface PtyInfo {
   id: string;
-  /** PID do Claude Code: o agente correspondente é `${account}:${pid}` (= agentId). */
+  /** PID do processo interativo do provedor. */
   pid: number;
   cwd: string;
   account: string;
+  provider?: Provider;
   agentId: string;
   /** Sessão retomada (`claude --resume`), quando o terminal assumiu uma sessão que já existia. */
   resumed?: string;

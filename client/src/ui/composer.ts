@@ -58,6 +58,8 @@ export class MessageComposer {
   private hint: HTMLElement;
   private tip: HTMLElement | null;
   private status: HTMLElement;
+  private memoryToggle: HTMLInputElement;
+  private memoryOption: HTMLElement;
   private dictate: DictationButton;
   /** Linha do ditado (gravando, transcrevendo, idioma, erro). */
   private dictStatus: HTMLElement;
@@ -114,8 +116,12 @@ export class MessageComposer {
     });
     this.hint = h('p', { class: 'ui-msg__hint', hidden: true });
     this.status = h('p', { class: 'ui-msg__status', role: 'status', hidden: true, attrs: { 'aria-live': 'polite' } });
+    this.memoryToggle = h('input', { type: 'checkbox', attrs: { 'aria-label': tr('Incluir memória neste envio') } });
+    // A memória das agentes deve acompanhar as mensagens por padrão; o usuário pode desmarcar por envio.
+    this.memoryToggle.checked = true;
+    this.memoryOption = h('label', { class: 'ui-msg__memory' }, this.memoryToggle, tr('Incluir memória neste envio'));
     this.tip = term ? null : h('p', { class: 'ui-msg__tip', text: composerTip() });
-    this.el = h('div', { class: `ui-msg ui-msg--${variant}` }, this.hint, this.row, this.dictStatus, this.status, this.tip);
+    this.el = h('div', { class: `ui-msg ui-msg--${variant}` }, this.hint, this.row, this.dictStatus, this.status, this.memoryOption, this.tip);
   }
 
   /**
@@ -141,11 +147,13 @@ export class MessageComposer {
       this.dictate.cancel();
       this.shown = shown;
       this.agentId = key;
+      this.memoryToggle.checked = false;
       this.box.value = ready ? (this.drafts.get(key) ?? '') : '';
       this.box.style.height = '';
       if (ready) requestAnimationFrame(() => this.resize());
     }
     this.box.disabled = !ready;
+    setHidden(this.memoryOption, !ready || !agent || agent.kind !== 'main' || !!store.mock);
     const name = agent?.name ?? tr('o agente');
     const placeholder = ready ? (term ? tr('Mensagem para {0} (Enter manda, Shift+Enter quebra a linha)', [name]) : tr('Mensagem para {0}…', [name])) : mode.text;
     setAttr(this.box, 'placeholder', placeholder);
@@ -253,7 +261,7 @@ export class MessageComposer {
     this.setState(agentId, { phase: 'sending', at: Date.now() });
     let r: { message: OutboxMessage } | { error: string };
     try {
-      r = await this.ctx.store.sendMessage(agentId, messageText(raw));
+      r = await this.ctx.store.sendMessage(agentId, messageText(raw), this.memoryToggle.checked);
     } catch {
       r = { error: OFFLINE_ERROR };
     }
@@ -271,6 +279,7 @@ export class MessageComposer {
       }
     }
     const m = r.message;
+    this.memoryToggle.checked = false;
     this.setState(agentId, { phase: m.status, id: m.id, error: m.error, at: Date.now() });
     if (!isSettled(m.status)) this.poll(agentId, m.id, Date.now());
   }

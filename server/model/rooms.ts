@@ -1,4 +1,40 @@
 // Salas do escritório: identidade (cwd normalizado), nome exibido e posição (slot) no prédio.
+import { existsSync } from 'node:fs';
+import { dirname, join, basename } from 'node:path';
+
+const gitRootCache = new Map<string, string | null>();
+
+/** Encontra o diretório raiz do repositório Git subindo na árvore até achar `.git`. */
+export function findGitRoot(startDir: string): string | null {
+  if (gitRootCache.has(startDir)) return gitRootCache.get(startDir)!;
+  try {
+    let cur = startDir;
+    while (true) {
+      if (existsSync(join(cur, '.git'))) {
+        gitRootCache.set(startDir, cur);
+        return cur;
+      }
+      const parent = dirname(cur);
+      if (parent === cur || !parent) break;
+      cur = parent;
+    }
+  } catch {
+    // Permissão de acesso
+  }
+  gitRootCache.set(startDir, null);
+  return null;
+}
+
+/** Detecta o workspace/monorepo a partir do caminho da sala. */
+export function detectWorkspace(path: string): { workspaceId?: string; workspaceName?: string } {
+  const root = findGitRoot(path);
+  if (!root) return {};
+  const base = basename(root);
+  return {
+    workspaceId: root.replace(/\\/g, '/').toLowerCase(),
+    workspaceName: base || 'workspace',
+  };
+}
 
 /** cwd normalizado: sem barras repetidas nem barra final. */
 export function normalizeCwd(cwd: string): string {

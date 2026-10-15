@@ -8,10 +8,11 @@ import { tr } from '../../../shared/i18n';
 
 // ---------------------------------------------------------------- filtro
 
-export type TerminalFilter = 'all' | 'prompts' | 'noTools';
+export type TerminalFilter = 'all' | 'answers' | 'prompts' | 'noTools';
 
 export const TERMINAL_FILTERS: readonly [TerminalFilter, string, string][] = [
   ['all', tr('Tudo'), tr('Toda a conversa')],
+  ['answers', tr('Respostas'), tr('Só as respostas finais do agente')],
   ['prompts', tr('Só prompts'), tr('Só os seus prompts e as respostas finais do agente')],
   ['noTools', tr('Sem ferramentas'), tr('Esconde as ferramentas e os resultados')],
 ];
@@ -45,6 +46,7 @@ export function itemVisible(item: TerminalItem, filter: TerminalFilter, finals: 
   if (filter === 'all') return true;
   if (item.type !== 'entry') return false;
   if (filter === 'noTools') return true;
+  if (filter === 'answers') return item.entry.kind === 'assistant' && finals.has(item.key);
   return item.entry.kind === 'user' || (item.entry.kind === 'assistant' && finals.has(item.key));
 }
 

@@ -82,7 +82,7 @@ class LocalSource implements DaySource {
   private last = 0;
 
   constructor(store: OfficeStore) {
-    store.on('snapshot', (snap) => {
+    const observe = (snap: NonNullable<OfficeStore['snapshot']>) => {
       const now = Date.now();
       if (now - this.last < 1_000) return;
       this.last = now;
@@ -91,7 +91,11 @@ class LocalSource implements DaySource {
         this.seeded = true;
       }
       this.tracker.observe(snap, now);
-    });
+    };
+    // No ?mock=1 o primeiro snapshot já existe antes do import dinâmico deste painel terminar. Sem esta
+    // amostra inicial, o acumulador podia ficar vazio até o simulador publicar outra mudança.
+    if (store.snapshot) observe(store.snapshot);
+    store.on('snapshot', observe);
   }
 
   async days(tz: string): Promise<StatsDaysResponse> {
@@ -380,7 +384,7 @@ export class DayPanel implements UiComponent {
       tile(tr('Sessões'), hl.sessions, hl.subagents),
       tile(tr('Pedidos'), hl.prompts, hl.activity),
       tile('Tokens', hl.tokens, hl.tokensDetail),
-      tile(tr('Custo'), hl.cost, hl.costHint, hl.costHint),
+      tile(tr('Custo estimado'), hl.cost, hl.costHint, hl.costHint),
     );
   }
 
@@ -638,8 +642,7 @@ export class DayPanel implements UiComponent {
           ...stat(tr('Trabalhando'), a.working),
           ...stat(tr('Esperando você'), a.waiting),
           ...stat('Tokens', a.tokens),
-          // Codex: não grava custo, só tokens.
-          ...(a.cost !== null ? stat(tr('Custo'), a.cost) : [h('dt', { text: tr('Custo') }), h('dd', { text: tr('só tokens'), title: tr('O Codex não grava custo, só tokens') })]),
+          ...(a.cost !== null ? stat(tr('Custo estimado'), a.cost) : [h('dt', { text: tr('Custo estimado'), title: tr('Estimativa por modelo e tokens; não é cobrança da assinatura') }), h('dd', { text: '—' })]),
         ),
       );
       setStyleVar(card, '--acc', a.color);

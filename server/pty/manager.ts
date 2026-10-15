@@ -38,9 +38,10 @@ export type SpawnPty = (file: string, args: string[], opts: { cwd: string; cols:
 
 export interface PtyAccount {
   id: string;
-  /** Pasta de configuração da conta (vira CLAUDE_CONFIG_DIR, exceto a padrão). */
+  /** Pasta de configuração da conta (CLAUDE_CONFIG_DIR ou CODEX_HOME, conforme o provedor). */
   dir: string;
   isDefault: boolean;
+  provider?: 'claude' | 'codex';
 }
 
 /** O que o gerenciador precisa saber de um agente principal para encerrá-lo ou assumi-lo. */
@@ -50,6 +51,8 @@ export interface PtyAgentRef {
   account: string;
   sessionId: string;
   cwd?: string;
+  provider?: 'claude' | 'codex';
+  startedAt?: number;
 }
 
 /**
@@ -71,8 +74,10 @@ export interface PtyManagerOptions {
   /** Por que o recurso está desligado (quando `spawn` é null). */
   disabledReason?: string;
   claudeBin: string;
+  codexBin?: string;
   accounts: () => PtyAccount[];
   agent: (id: string) => PtyAgentRef | undefined;
+  agents?: () => PtyAgentRef[];
   onChange: () => void;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
@@ -169,6 +174,9 @@ interface SpawnPlan {
   account: PtyAccount;
   cols: number;
   rows: number;
+  provider: 'claude' | 'codex';
+  model?: string;
+  effort?: string;
 }
 
 export class PtyError extends Error {
@@ -218,12 +226,17 @@ export class PtyManager {
     for (const [id, t] of this.ptys) {
       if (t.info.exitedAt !== undefined && now - t.info.exitedAt > EXITED_KEEP_MS) this.drop(id);
     }
+    for (const t of this.ptys.values()) {
+      if (t.info.provider !== 'codex' || t.info.exitedAt !== undefined || /^.+:\d+$/.test(t.info.agentId)) continue;
+      const match = this.opts.agents?.().filter((a) => a.kind === 'main' && a.provider === 'codex' && a.account === t.info.account && a.cwd && resolve(a.cwd) === t.info.cwd && a.startedAt !== undefined && a.startedAt >= t.info.startedAt - 10_000).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))[0];
+      if (match) t.info.agentId = match.id;
+    }
     return [...this.ptys.values()].map((t) => ({ ...t.info }));
   }
 
   /** Abre uma sessão nova do Claude Code na pasta (`cwd` absoluto), na conta pedida (ou na padrão). */
-  create(p: { cwd: unknown; account?: unknown; cols?: unknown; rows?: unknown }): PtyInfo {
-    return this.spawn(this.plan(p, this.takeovers.size));
+  create(p: { cwd: unknown; account?: unknown; provider?: unknown; prompt?: unknown; model?: unknown; effort?: unknown; cols?: unknown; rows?: unknown }): PtyInfo {
+    return this.spawn(this.plan(p, this.takeovers.size), { prompt: typeof p.prompt === 'string' ? p.prompt.slice(0, 8_000) : undefined });
   }
 
   /**
@@ -370,11 +383,13 @@ export class PtyManager {
   }
 
   /** Valida o pedido de uma sessão nova (`reserved`: vagas já prometidas a tomadas em andamento). */
-  private plan(p: { cwd: unknown; account?: unknown; cols?: unknown; rows?: unknown }, reserved = 0): SpawnPlan {
+  private plan(p: { cwd: unknown; account?: unknown; provider?: unknown; prompt?: unknown; model?: unknown; effort?: unknown; cols?: unknown; rows?: unknown }, reserved = 0): SpawnPlan {
     if (!this.opts.spawn) throw new PtyError(503, tr('terminal desligado: {0}', [this.opts.disabledReason ?? tr('indisponível')]));
     // Antes de tudo (o "assumir" encerra a sessão de lá depois daqui): um claude que não roda abriria um terminal que
     // sai na hora.
-    if (!isExecutableFile(this.opts.claudeBin)) throw new PtyError(503, tr('o executável do Claude Code não roda: {0} (confira o HABBLAUD_CLAUDE_BIN)', [this.opts.claudeBin]));
+    const provider = p.provider === 'codex' ? 'codex' : 'claude';
+    const executable = provider === 'codex' ? this.opts.codexBin : this.opts.claudeBin;
+    if (!executable || !isExecutableFile(executable)) throw new PtyError(503, provider === 'codex' ? tr('executável do Codex indisponível (confira HABBLAUD_CODEX_BIN)') : tr('o executável do Claude Code não roda: {0} (confira o HABBLAUD_CLAUDE_BIN)', [this.opts.claudeBin]));
     if (typeof p.cwd !== 'string' || !isAbsolute(p.cwd)) throw new PtyError(400, tr('informe a pasta do projeto (caminho absoluto)'));
     const cwd = resolve(p.cwd);
     let isDir = false;
@@ -384,32 +399,45 @@ export class PtyManager {
       // tratado abaixo
     }
     if (!isDir) throw new PtyError(400, tr('pasta não encontrada: {0}', [cwd]));
-    const accounts = this.opts.accounts();
+    const accounts = this.opts.accounts().filter((a) => (a.provider ?? 'claude') === provider);
     const account = typeof p.account === 'string' ? accounts.find((a) => a.id === p.account) : (accounts.find((a) => a.isDefault) ?? accounts[0]);
     if (!account) throw new PtyError(400, tr('conta desconhecida'));
     const running = [...this.ptys.values()].filter((t) => t.info.exitedAt === undefined).length;
     if (running + Math.max(0, reserved) >= MAX_PTYS) throw new PtyError(429, tr('limite de {0} terminais abertos', [MAX_PTYS]));
-    return { cwd, account, cols: clampInt(p.cols, 20, 400, 100), rows: clampInt(p.rows, 5, 200, 30) };
+    const effort = typeof p.effort === 'string' ? p.effort : '';
+    if (provider === 'codex' && effort && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) throw new PtyError(400, tr('força de raciocínio inválida'));
+    const model = typeof p.model === 'string' ? p.model.trim() : '';
+    if (model.length > 100 || /[\r\n\0]/.test(model)) throw new PtyError(400, tr('modelo inválido'));
+    return { cwd, account, cols: clampInt(p.cols, 20, 400, 100), rows: clampInt(p.rows, 5, 200, 30), provider, ...(model ? { model } : {}), ...(provider === 'codex' && effort ? { effort } : {}) };
   }
 
-  private spawn(plan: SpawnPlan, p: { resume?: string; from?: string } = {}): PtyInfo {
+  private spawn(plan: SpawnPlan, p: { resume?: string; from?: string; prompt?: string } = {}): PtyInfo {
     const spawn = this.opts.spawn;
     if (!spawn) throw new PtyError(503, tr('terminal desligado: {0}', [this.opts.disabledReason ?? tr('indisponível')]));
     const { cwd, account, cols, rows } = plan;
     const env: NodeJS.ProcessEnv = { ...(this.opts.env ?? process.env), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
     for (const k of INHERITED_SESSION_VARS) delete env[k];
-    if (account.isDefault) delete env.CLAUDE_CONFIG_DIR;
-    else env.CLAUDE_CONFIG_DIR = account.dir;
+    if (plan.provider === 'codex') {
+      if (account.isDefault) delete env.CODEX_HOME;
+      else env.CODEX_HOME = account.dir;
+      delete env.CLAUDE_CONFIG_DIR;
+    } else {
+      if (account.isDefault) delete env.CLAUDE_CONFIG_DIR;
+      else env.CLAUDE_CONFIG_DIR = account.dir;
+    }
 
     let proc: PtyProcess;
     try {
-      const args = p.resume ? ['--resume', p.resume] : [];
-      proc = spawn(this.opts.claudeBin, args, { cwd, cols, rows, env });
+      const executable = plan.provider === 'codex' ? this.opts.codexBin! : this.opts.claudeBin;
+      const args = plan.provider === 'codex'
+        ? ['-C', cwd, ...(plan.model ? ['--model', plan.model] : []), ...(plan.effort ? ['--config', `model_reasoning_effort=${plan.effort}`] : []), ...(p.prompt?.trim() ? [p.prompt.trim()] : [])]
+        : p.resume ? ['--resume', p.resume] : [];
+      proc = spawn(executable, args, { cwd, cols, rows, env });
     } catch (err) {
-      throw new PtyError(500, tr('não consegui abrir o Claude Code: {0}', [errMsg(err)]));
+      throw new PtyError(500, tr('não consegui abrir {0}: {1}', [plan.provider === 'codex' ? 'Codex' : 'Claude Code', errMsg(err)]));
     }
     const id = `p${++this.seq}-${proc.pid}`;
-    const info: PtyInfo = { id, pid: proc.pid, cwd, account: account.id, agentId: `${account.id}:${proc.pid}`, startedAt: this.now() };
+    const info: PtyInfo = { id, pid: proc.pid, cwd, account: account.id, provider: plan.provider, agentId: plan.provider === 'codex' ? `codex-pty:${id}` : `${account.id}:${proc.pid}`, startedAt: this.now() };
     if (p.resume) info.resumed = p.resume;
     if (p.from) info.fromAgent = p.from;
     const pty: Pty = { info, proc, screen: this.createScreen(cols, rows), clients: new Set(), pending: new Map() };

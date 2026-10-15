@@ -4,13 +4,15 @@
 // Mesma exposição do /api/snapshot (resumos de atividade): vale com qualquer bind, sem a trava local do
 // terminal. O dia só é aceito no formato AAAA-MM-DD de uma data válida: o caminho do arquivo nunca leva
 // texto vindo da URL (nada de "..", barras ou bytes estranhos).
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, statSync, unlinkSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream';
 import { createGzip } from 'node:zlib';
+import { basename } from 'node:path';
 import { listTimelineDays, timelineFile } from '../history/timeline';
 import { sendJson } from './app';
 import { tr } from '../../shared/i18n';
+import { isLoopbackHost } from './guard';
 
 const DAYS_PATH = '/api/timeline/days';
 const DAY_ROUTE = /^\/api\/timeline\/([^/]+)$/;
@@ -20,6 +22,7 @@ export interface TimelineRoutesOptions {
   dir: string;
   /** O servidor está gravando (HABBLAUD_TIMELINE não desligou). */
   recording: boolean;
+  onDelete?: (day?: string) => void;
 }
 
 /** Devolve um handler que trata /api/timeline/* e responde false para o resto. */
@@ -28,8 +31,37 @@ export function createTimelineHandler(opts: TimelineRoutesOptions): (req: Incomi
     const path = url.pathname;
     if (path !== '/api/timeline' && !path.startsWith('/api/timeline/')) return false;
     const method = req.method ?? 'GET';
+    if (method === 'DELETE') {
+      if (path === DAYS_PATH) {
+        res.setHeader('Allow', 'GET, HEAD'); sendJson(res, 405, { error: tr('método não permitido') }); return true;
+      }
+      if (path !== '/api/timeline' && !DAY_ROUTE.test(path)) {
+        res.setHeader('Allow', 'GET, HEAD'); sendJson(res, 405, { error: tr('método não permitido') }); return true;
+      }
+      if (!isLoopbackHost(req.headers.host)) {
+        req.resume(); sendJson(res, 403, { error: tr('apagar dados do histórico exige acesso pelo próprio computador') }); return true;
+      }
+      req.resume();
+      if (path === '/api/timeline') {
+        let removed = 0;
+        for (const { day } of listTimelineDays(opts.dir)) {
+          const target = timelineFile(opts.dir, day);
+          if (!target) continue;
+          try { unlinkSync(target); removed++; } catch { /* removido por outro processo */ }
+        }
+        opts.onDelete?.();
+        sendJson(res, 200, { removed }); return true;
+      }
+      const m = DAY_ROUTE.exec(path);
+      let day = '';
+      try { day = m ? decodeURIComponent(m[1]) : ''; } catch { day = ''; }
+      const target = timelineFile(opts.dir, day);
+      if (!target) sendJson(res, 400, { error: tr('dia inválido: use AAAA-MM-DD') });
+      else { try { unlinkSync(target); opts.onDelete?.(day); sendJson(res, 200, { ok: true }); } catch { sendJson(res, 404, { error: tr('nada gravado neste dia') }); } }
+      return true;
+    }
     if (method !== 'GET' && method !== 'HEAD') {
-      res.setHeader('Allow', 'GET');
+      res.setHeader('Allow', 'GET, HEAD, DELETE');
       sendJson(res, 405, { error: tr('método não permitido') });
       return true;
     }
@@ -72,6 +104,7 @@ function sendDay(req: IncomingMessage, res: ServerResponse, file: string, size: 
     'X-Content-Type-Options': 'nosniff',
     'Cross-Origin-Resource-Policy': 'same-origin',
     Vary: 'Accept-Encoding',
+    'Content-Disposition': `attachment; filename="habblaud-timeline-${basename(file).replace(/\.jsonl$/, '')}.jsonl"`,
   };
   if (gzip) headers['Content-Encoding'] = 'gzip';
   else headers['Content-Length'] = size;

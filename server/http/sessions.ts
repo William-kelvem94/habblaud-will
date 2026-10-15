@@ -77,5 +77,6 @@ export function handleSessionsRoute(req: IncomingMessage, res: ServerResponse, p
   if (account === undefined || sessionId === undefined) return sendJson(res, 400, { error: tr('endereço inválido') });
   const found = history.resolve(account, sessionId);
   if ('error' in found) return sendJson(res, found.status, { error: found.error });
-  terminals.attachSession(req, res, `session:${account}:${sessionId}`, found.path, found.createParser);
+  if ('data' in found) terminals.attachSessionData(req, res, `session:${account}:${sessionId}`, found.data, found.createParser);
+  else terminals.attachSession(req, res, `session:${account}:${sessionId}`, found.path, found.createParser);
 }

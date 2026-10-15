@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { join as posixJoin } from 'node:path/posix';
 import { tr } from '../../shared/i18n';
 
 export const TRANSCRIBE_TIMEOUT_MS = 120_000;
@@ -32,11 +33,11 @@ export interface Transcript {
 
 export type Transcriber = (audio: Buffer, type: string) => Promise<Transcript>;
 
-function onPath(name: string, env: NodeJS.ProcessEnv): string | undefined {
-  for (const dir of (env.PATH ?? '').split(delimiter)) {
+function onPath(name: string, env: NodeJS.ProcessEnv, exists: (path: string) => boolean): string | undefined {
+  for (const dir of (env.PATH ?? env.Path ?? '').split(delimiter)) {
     if (!dir) continue;
-    const p = join(dir, name);
-    if (existsSync(p)) return p;
+    const p = /^\//.test(dir) && !/^[A-Za-z]:[\\/]/.test(dir) ? posixJoin(dir, name) : join(dir, name);
+    if (exists(p)) return p;
   }
   return undefined;
 }
@@ -44,14 +45,15 @@ function onPath(name: string, env: NodeJS.ProcessEnv): string | undefined {
 /** Acha o whisper-cli, o ffmpeg e o melhor modelo multilíngue; undefined (com o motivo) se faltar algum. */
 export function findWhisper(env: NodeJS.ProcessEnv = process.env, exists: (p: string) => boolean = existsSync): WhisperSetup | { missing: string } {
   const home = env.HOME || homedir();
-  const bin = env.HABBLAUD_WHISPER_BIN?.trim() || ['/opt/homebrew/bin/whisper-cli', '/usr/local/bin/whisper-cli'].find(exists) || onPath('whisper-cli', env);
+  const bin = env.HABBLAUD_WHISPER_BIN?.trim() || ['/opt/homebrew/bin/whisper-cli', '/usr/local/bin/whisper-cli'].find(exists) || onPath('whisper-cli', env, exists);
   if (!bin || !exists(bin)) return { missing: 'whisper-cli (brew install whisper-cpp)' };
-  const ffmpeg = env.HABBLAUD_FFMPEG_BIN?.trim() || ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find(exists) || onPath('ffmpeg', env);
+  const ffmpeg = env.HABBLAUD_FFMPEG_BIN?.trim() || ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find(exists) || onPath('ffmpeg', env, exists);
   if (!ffmpeg || !exists(ffmpeg)) return { missing: 'ffmpeg (brew install ffmpeg)' };
-  const dirs = [join(home, '.local', 'share', 'whisper'), join(home, '.whisper'), '/opt/homebrew/share/whisper-cpp', '/usr/local/share/whisper-cpp'];
+  const homeJoin = /^\//.test(home) && !/^[A-Za-z]:[\\/]/.test(home) ? posixJoin : join;
+  const dirs = [homeJoin(home, '.local', 'share', 'whisper'), homeJoin(home, '.whisper'), '/opt/homebrew/share/whisper-cpp', '/usr/local/share/whisper-cpp'];
   const model =
     env.HABBLAUD_WHISPER_MODEL?.trim() ||
-    MODELS.flatMap((m) => dirs.map((d) => join(d, m))).find(exists);
+    MODELS.flatMap((m) => dirs.map((d) => (/^\//.test(d) && !/^[A-Za-z]:[\\/]/.test(d) ? posixJoin : join)(d, m))).find(exists);
   if (!model || !exists(model)) return { missing: tr('um modelo multilíngue do Whisper (ggml-small.bin ou ggml-base.bin em ~/.local/share/whisper)') };
   const langs = (env.HABBLAUD_DICTATION_LANGS ?? '')
     .split(',')

@@ -11,11 +11,21 @@ import { tr } from '../../../shared/i18n';
 
 export type ConnectionState = 'connecting' | 'open' | 'closed' | 'mock';
 
+export interface StreamDiagnostics {
+  state: ConnectionState;
+  lastEventId: string | null;
+  eventsReceived: number;
+  reconnectAttempts: number;
+  lastLatencyMs: number | null;
+  connectedAt: number | null;
+}
+
 export interface StoreEvents {
   snapshot: OfficeSnapshot;
   feed: FeedItem[];
   notice: Notice;
   connection: ConnectionState;
+  diagnostics: StreamDiagnostics;
   /** O servidor está servindo outro build do cliente: esta página está desatualizada. Emitido uma vez. */
   update: { build: string; current: string };
 }
@@ -89,6 +99,12 @@ export class OfficeStore {
   feed: FeedItem[] = [];
   connection: ConnectionState = 'connecting';
   readonly mock: boolean;
+
+  /** Telemetria do stream SSE para diagnóstico de rede e reconexão. */
+  lastEventId: string | null = null;
+  eventsReceived = 0;
+  lastLatencyMs: number | null = null;
+  connectedAt: number | null = null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners = new Map<keyof StoreEvents, Set<(value: any) => void>>();
@@ -311,9 +327,9 @@ export class OfficeStore {
    * (agente que não recebe mensagens, fila cheia, acesso que não é local...). Sem conexão com o servidor: lança.
    * No ?mock=1 a entrega é fictícia (o simulador põe a atividade no agente).
    */
-  async sendMessage(agentId: string, text: string): Promise<{ message: OutboxMessage } | { error: string }> {
+  async sendMessage(agentId: string, text: string, includeMemory = false): Promise<{ message: OutboxMessage } | { error: string }> {
     if (this.mock) return this.mockSend(agentId, text);
-    const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId, text }) });
+    const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId, text, ...(includeMemory ? { includeMemory: true } : {}) }) });
     let body: unknown;
     try {
       body = await res.json();
@@ -369,10 +385,26 @@ export class OfficeStore {
     });
   }
 
+  get diagnostics(): StreamDiagnostics {
+    return {
+      state: this.connection,
+      lastEventId: this.lastEventId,
+      eventsReceived: this.eventsReceived,
+      reconnectAttempts: this.attempts,
+      lastLatencyMs: this.lastLatencyMs,
+      connectedAt: this.connectedAt,
+    };
+  }
+
+  private notifyDiagnostics(): void {
+    this.emit('diagnostics', this.diagnostics);
+  }
+
   private setConnection(state: ConnectionState): void {
     if (this.connection === state) return;
     this.connection = state;
     this.emit('connection', state);
+    this.notifyDiagnostics();
   }
 
   private applySnapshot(snap: OfficeSnapshot): void {
@@ -438,9 +470,16 @@ export class OfficeStore {
     this.source = es;
     // Eventos de um stream já substituído (reconexão) não valem mais.
     const current = () => this.source === es;
+    const recordEvent = (ev: Event) => {
+      this.eventsReceived++;
+      const lastId = (ev as MessageEvent).lastEventId;
+      if (lastId) this.lastEventId = String(lastId);
+    };
+
     es.addEventListener('open', () => {
       if (!current()) return;
       this.attempts = 0;
+      this.connectedAt = Date.now();
       this.clearRetry();
       this.setConnection('open');
     });
@@ -456,18 +495,29 @@ export class OfficeStore {
     });
     es.addEventListener('snapshot', (ev) => {
       if (!current()) return;
+      recordEvent(ev);
       const snap = this.parse<OfficeSnapshot>(ev, 'snapshot');
-      if (snap) this.applySnapshot(snap);
+      if (snap) {
+        if (snap.serverTime) {
+          this.lastLatencyMs = Math.max(0, Date.now() - snap.serverTime);
+        }
+        this.applySnapshot(snap);
+      }
+      this.notifyDiagnostics();
     });
     es.addEventListener('feed', (ev) => {
       if (!current()) return;
+      recordEvent(ev);
       const items = this.parse<FeedItem[]>(ev, 'feed');
       if (items) this.applyFeed(items);
+      this.notifyDiagnostics();
     });
     es.addEventListener('notice', (ev) => {
       if (!current()) return;
+      recordEvent(ev);
       const n = this.parse<Notice>(ev, 'aviso');
       if (n) this.emit('notice', n);
+      this.notifyDiagnostics();
     });
   }
 

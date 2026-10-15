@@ -32,11 +32,13 @@ import { CHUNK_PX, floorChunk } from './surfaces/floor';
 import { WALL_CAP_H, WALL_FACE_H, capColor, southWallTile, wallFaceTile } from './surfaces/walls';
 import { renderRug } from './surfaces/rug';
 import { roomTheme as roomThemePure } from './theme';
+import { renderPet, type PetFrameRequest } from './pets';
 
 export * from './api';
 export { hash32 };
 export { drawBoard, drawClock, drawScreen, drawWindowView, footballLance };
 export { editorConflict, editorOptions, fitToOptions, type EditorOptions } from './character/appearance';
+export { renderPet };
 
 // ------------------------------------------------------------------ canvas e cache
 
@@ -75,6 +77,12 @@ const floorCache = new Cache<HTMLCanvasElement>(1500);
 const iconCache = new Cache<Sprite>(64);
 const avatarCache = new Cache<HTMLCanvasElement>(2000);
 const rugCache = new Cache<HTMLCanvasElement>(512);
+const petCache = new Cache<Sprite>(500);
+
+export function petSprite(req: PetFrameRequest): Sprite {
+  const key = `${req.kind}|${req.pose}|${req.dir}|${req.frame % 4}|${req.variant ?? 0}`;
+  return petCache.get(key, () => toSprite(renderPet(req)));
+}
 
 const appearanceKeys = new WeakMap<Appearance, string>();
 function keyOf(a: Appearance): string {
@@ -328,6 +336,7 @@ const _contract: ArtModule = {
   roomTheme,
   iconSprite,
   avatarCanvas,
+  petSprite,
 };
 void _contract;
 

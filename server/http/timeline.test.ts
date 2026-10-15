@@ -100,6 +100,7 @@ describe('API da linha do tempo', () => {
     expect(plain.headers['content-type']).toBe('application/x-ndjson; charset=utf-8');
     expect(plain.headers['x-content-type-options']).toBe('nosniff');
     expect(plain.headers['content-encoding']).toBeUndefined();
+    expect(plain.headers['content-disposition']).toContain('habblaud-timeline-2026-10-07.jsonl');
     expect(parseTimeline(plain.body.toString('utf8')).map((r) => r.t)).toEqual(['k', 'd', 'end']);
 
     const gz = await raw(env.base, '/api/timeline/2026-10-07', { headers: { 'Accept-Encoding': 'gzip, deflate' } });
@@ -139,6 +140,21 @@ describe('API da linha do tempo', () => {
     // (o guard da borda já exige JSON em métodos que não são leitura)
     const post = await raw(env.base, '/api/timeline/days', { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
     expect(post.status).toBe(405);
-    expect(post.headers.allow).toBe('GET');
+    expect(post.headers.allow).toBe('GET, HEAD');
+  });
+
+  it('apaga um dia ou todo o histórico só com Host local', async () => {
+    const one = await raw(env.base, '/api/timeline/2026-10-07', { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
+    expect(one.status).toBe(200);
+    expect((await raw(env.base, '/api/timeline/2026-10-07')).status).toBe(404);
+    const all = await raw(env.base, '/api/timeline', { method: 'DELETE', headers: { 'Content-Type': 'application/json', Host: 'example.test' } });
+    expect(all.status).toBe(403);
+  });
+
+  it('apaga todos os dias existentes e informa a quantidade', async () => {
+    const all = await raw(env.base, '/api/timeline', { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
+    expect(all.status).toBe(200);
+    expect(JSON.parse(all.body.toString())).toEqual({ removed: 1 });
+    expect((await raw(env.base, '/api/timeline/2026-10-07')).status).toBe(404);
   });
 });

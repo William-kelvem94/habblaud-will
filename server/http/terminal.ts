@@ -245,6 +245,24 @@ export class TerminalStreams {
     this.serve(req, res, streamId, new TranscriptSource(streamId, path, o, this.sessionPollMs));
   }
 
+  /** Serve uma conversa compactada já descompactada e limitada pela camada de histórico. */
+  attachSessionData(req: IncomingMessage, res: ServerResponse, streamId: string, data: Buffer, createParser?: () => TerminalParser): void {
+    const parser = (createParser ?? this.createParser)();
+    const entries: TerminalEntry[] = [];
+    const text = data.toString('utf8');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      parseInto(parser, [line], entries);
+    }
+    const visible = entries.slice(-this.initEntries);
+    const source: ConversationSource = {
+      intervalMs: this.sessionPollMs,
+      load: () => ({ agentId: streamId, entries: visible, truncated: entries.length > visible.length }),
+      poll: () => ({ append: [] }),
+    };
+    this.serve(req, res, streamId, source);
+  }
+
   /** Limite de terminais, `init` e o stream SSE de uma fonte já escolhida. */
   private serve(req: IncomingMessage, res: ServerResponse, id: string, source: ConversationSource): void {
     if (this.streams.size >= this.maxStreams) {

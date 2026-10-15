@@ -25,6 +25,10 @@ export class FeedPanel implements UiComponent {
   private hovering = false;
   private scrolledUp = false;
   private newPill: HTMLButtonElement;
+  private terminalDock: HTMLButtonElement;
+  private terminalDockName: HTMLElement;
+  private terminalDockDetail: HTMLElement;
+  private terminalDockUnread: HTMLElement;
   private ticker: HTMLElement;
   private toggleBtn: HTMLButtonElement;
   private empty: HTMLElement;
@@ -42,6 +46,17 @@ export class FeedPanel implements UiComponent {
     this.empty = h('p', { class: 'ui-feed__empty', text: tr('Os eventos dos agentes aparecem aqui assim que acontecem.') });
     this.newPill = h('button', { class: 'ui-feed__new', type: 'button', hidden: true, on: { click: () => this.resume() } });
     this.ticker = h('span', { class: 'ui-feed__ticker', attrs: { 'aria-hidden': 'true' } });
+    this.terminalDockName = h('strong', { class: 'ui-feed__terminal-name' });
+    this.terminalDockDetail = h('span', { class: 'ui-feed__terminal-detail' });
+    this.terminalDockUnread = h('span', { class: 'ui-feed__terminal-unread', hidden: true });
+    const terminalIcon = h('span', { class: 'ui-feed__terminal-icon', attrs: { 'aria-hidden': 'true' } });
+    terminalIcon.innerHTML = ICONS.terminal;
+    this.terminalDock = h('button', {
+      class: 'ui-feed__terminal',
+      type: 'button',
+      hidden: true,
+      on: { click: () => this.ctx.terminals?.restoreMinimized() },
+    }, terminalIcon, h('span', { class: 'ui-feed__terminal-copy' }, this.terminalDockName, this.terminalDockDetail), this.terminalDockUnread);
     this.filterNote = h('span', { class: 'ui-feed__filter', hidden: true });
     this.toggleBtn = h('button', { class: 'ui-icon-btn ui-icon-btn--sm', type: 'button', on: { click: () => ctx.togglePanel('feed') } });
     const scroller = h('div', { class: 'ui-feed__scroll' }, this.list, this.empty);
@@ -57,6 +72,7 @@ export class FeedPanel implements UiComponent {
         { class: 'ui-feed__head' },
         h('button', { class: 'ui-feed__title', type: 'button', on: { click: () => ctx.togglePanel('feed') } }, h('h2', { text: tr('Atividade') }), this.filterNote, this.ticker),
         this.newPill,
+        this.terminalDock,
         this.toggleBtn,
       ),
       scroller,
@@ -126,6 +142,17 @@ export class FeedPanel implements UiComponent {
 
     const latest = pending[pending.length - 1] ?? visible[visible.length - 1];
     setText(this.ticker, latest ? `${latest.agentName}: ${latest.activity.icon} ${latest.activity.text}` : '');
+    const minimized = this.ctx.terminals?.minimizedInfo ?? null;
+    setHidden(this.terminalDock, !minimized);
+    if (minimized) {
+      setText(this.terminalDockName, minimized.label);
+      setText(this.terminalDockDetail, minimized.detail);
+      setHidden(this.terminalDockUnread, !minimized.unread);
+      setText(this.terminalDockUnread, minimized.unread ? String(Math.min(minimized.unread, 99)) : '');
+      const title = `${tr('Restaurar terminal')} · ${minimized.label}${minimized.unread ? ` · ${minimized.unread}` : ''}`;
+      setAttr(this.terminalDock, 'aria-label', title);
+      setTitle(this.terminalDock, title);
+    }
     this.toggleBtn.innerHTML = open ? ICONS.chevronDown : ICONS.chevronUp;
     const label = open ? tr('Recolher feed ( ] )') : tr('Abrir feed ( ] )');
     setAttr(this.toggleBtn, 'aria-label', label);

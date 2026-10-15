@@ -89,8 +89,7 @@ export interface Highlights {
 }
 
 /**
- * `codex` = alguma conta do Codex trabalhou no dia: o custo é só o do Claude Code (o Codex não grava custo, só
- * tokens), e a dica diz isso.
+ * `codex` = alguma conta do Codex trabalhou no dia; o custo vem da estimativa por modelo e tokens.
  */
 export function highlights(stats: DayStats, clock: (t: number) => string, codex = false): Highlights {
   const t = stats.totals;
@@ -112,11 +111,11 @@ export function highlights(stats: DayStats, clock: (t: number) => string, codex 
     costHint:
       c.costUSD > 0
         ? codex
-          ? tr('Só do Claude Code: o Codex não grava custo, só tokens')
+          ? tr('Inclui estimativa Codex pelo modelo/tokens; não é cobrança da assinatura')
           : tr('Custo calculado pelo próprio Claude Code')
         : c.tokensIn + c.tokensOut > 0
           ? codex
-            ? tr('O Codex não grava custo, só tokens')
+            ? tr('Sem estimativa: modelo Codex sem tarifa cadastrada')
             : tr('Os transcripts não trouxeram o custo')
           : tr('Nenhum gasto registrado'),
     prompts: formatInt(c.prompts),
@@ -250,7 +249,7 @@ export interface AccountCard {
   waiting: string;
   sessions: string;
   tokens: string;
-  /** null = conta do Codex (ele não grava custo: o cartão mostra só os tokens). */
+  /** null = sem valor estimado disponível. */
   cost: string | null;
   /** Conta do Codex (chip vazado). */
   codex: boolean;
@@ -275,7 +274,7 @@ export function accountCards(accounts: readonly AccountDayStats[], isCodex: (id:
         waiting: formatAgentTime(a.ms.waiting),
         sessions: `${formatInt(a.sessions)} ${a.sessions === 1 ? tr('sessão') : tr('sessões')}${a.subagents ? ` · ${formatInt(a.subagents)} sub` : ''}`,
         tokens: formatTokens(a.counts.tokensIn + a.counts.tokensOut),
-        cost: codex ? null : a.counts.costUSD > 0 ? formatUSD(a.counts.costUSD) : '—',
+        cost: a.counts.costUSD > 0 ? formatUSD(a.counts.costUSD) : '—',
         codex,
       };
     });

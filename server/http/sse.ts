@@ -9,6 +9,13 @@ import { isLoopbackHost } from './guard';
 /** Cliente lento demais (buffer acumulado acima disto) é desconectado; o EventSource reconecta. */
 const MAX_BUFFERED = 8 * 1024 * 1024;
 
+export interface BufferedEvent {
+  id: number;
+  event: string;
+  data: unknown;
+  frame: string;
+}
+
 export class Hub {
   private clients = new Set<ServerResponse>();
   /** Clientes que abriram a página por um Host local (os únicos que podem responder pedidos de permissão). */
@@ -20,6 +27,10 @@ export class Hub {
   private snapshotCbs = new Set<(snap: OfficeSnapshot) => void>();
   private readonly throttleMs: number;
   private readonly pingMs: number;
+  /** Sequenciador global de eventos SSE e buffer circular recente para reconexões resilientes (Last-Event-ID). */
+  private eventSeq = 0;
+  private readonly maxBufferedEvents = 100;
+  private recentEvents: BufferedEvent[] = [];
   /** Quem pode responder pelo escritório; padrão: Host local. A porta remota (http/remote.ts) troca a regra. */
   private readonly canAnswer: (req: IncomingMessage) => boolean;
 
@@ -53,6 +64,10 @@ export class Hub {
     return this.clients.size;
   }
 
+  get currentSeq(): number {
+    return this.eventSeq;
+  }
+
   /** Avisado a cada snapshot novo transmitido (ex.: o gravador da linha do tempo). */
   onSnapshot(cb: (snap: OfficeSnapshot) => void): () => void {
     this.snapshotCbs.add(cb);
@@ -66,7 +81,7 @@ export class Hub {
     return n;
   }
 
-  /** Conecta um cliente: snapshot completo + últimos 50 itens do feed, depois o fluxo ao vivo. */
+  /** Conecta um cliente: snapshot completo + últimos 50 itens do feed, ou replay dos eventos pendentes via Last-Event-ID. */
   attach(req: IncomingMessage, res: ServerResponse): void {
     req.socket.setTimeout(0);
     req.socket.setNoDelay(true);
@@ -76,10 +91,36 @@ export class Hub {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    const snapshot = this.current();
     res.write('retry: 2000\n\n');
-    res.write(frame('snapshot', snapshot));
-    res.write(frame('feed', this.office.recentFeed(50)));
+
+    const lastHeader = req.headers['last-event-id'];
+    const lastId = typeof lastHeader === 'string' && /^\d+$/.test(lastHeader.trim()) ? parseInt(lastHeader.trim(), 10) : NaN;
+    const canReplay = !isNaN(lastId) && this.recentEvents.length > 0 && this.recentEvents[0].id <= lastId + 1 && lastId <= this.eventSeq;
+
+    if (canReplay) {
+      // Reenvia apenas os eventos perdidos durante a reconexão
+      const missed = this.recentEvents.filter((e) => e.id > lastId);
+      for (const ev of missed) {
+        res.write(ev.frame);
+      }
+    } else {
+      // Conexão inicial ou buffer extrapolou: snapshot completo fresco + últimos 50 itens do feed
+      const snapshot = this.current();
+      const snapId = ++this.eventSeq;
+      const feedId = ++this.eventSeq;
+      const snapFrame = frame('snapshot', snapshot, snapId);
+      const feedFrame = frame('feed', this.office.recentFeed(50), feedId);
+
+      this.recentEvents.push({ id: snapId, event: 'snapshot', data: snapshot, frame: snapFrame });
+      this.recentEvents.push({ id: feedId, event: 'feed', data: this.office.recentFeed(50), frame: feedFrame });
+      if (this.recentEvents.length > this.maxBufferedEvents) {
+        this.recentEvents.splice(0, this.recentEvents.length - this.maxBufferedEvents);
+      }
+
+      res.write(snapFrame);
+      res.write(feedFrame);
+    }
+
     this.clients.add(res);
     if (this.canAnswer(req)) this.local.add(res);
     const drop = () => this.clients.delete(res);
@@ -95,7 +136,9 @@ export class Hub {
     this.lastFlush = Date.now();
     const r = this.office.commit();
     if (r.changed) {
-      this.writeAll(frame('snapshot', r.snapshot));
+      if (this.clients.size > 0) {
+        this.emitEvent('snapshot', r.snapshot);
+      }
       for (const cb of this.snapshotCbs) {
         try {
           cb(r.snapshot);
@@ -104,14 +147,26 @@ export class Hub {
         }
       }
     }
-    if (r.feed.length) this.writeAll(frame('feed', r.feed));
-    for (const n of r.notices) this.writeAll(frame('notice', n));
+    if (this.clients.size > 0) {
+      if (r.feed.length) this.emitEvent('feed', r.feed);
+      for (const n of r.notices) this.emitEvent('notice', n);
+    }
     return r.snapshot;
   }
 
   /** Snapshot atual (depois de transmitir o que estiver pendente), com `serverTime` de agora. */
   current(): OfficeSnapshot {
     return { ...this.flush(), serverTime: Date.now() };
+  }
+
+  private emitEvent(event: string, data: unknown): void {
+    const id = ++this.eventSeq;
+    const raw = frame(event, data, id);
+    this.recentEvents.push({ id, event, data, frame: raw });
+    if (this.recentEvents.length > this.maxBufferedEvents) {
+      this.recentEvents.shift();
+    }
+    this.writeAll(raw);
   }
 
   private schedule(): void {
@@ -140,6 +195,7 @@ export class Hub {
   }
 }
 
-export function frame(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+export function frame(event: string, data: unknown, id?: number | string): string {
+  const idLine = id !== undefined ? `id: ${id}\n` : '';
+  return `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }

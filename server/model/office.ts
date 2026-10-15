@@ -30,9 +30,8 @@ import { describeGitHubEvent, githubEventKey, RoomEffects, type GitHubEvent } fr
 import { hash32 } from '../../shared/hash';
 import { applyPermission } from '../permissions/registry';
 import type { NameStore, StoredCharacter } from './names';
-import { normalizeCwd, roomDisplayNames, SlotAllocator } from './rooms';
+import { detectWorkspace, normalizeCwd, roomDisplayNames, SlotAllocator } from './rooms';
 import { tr } from '../../shared/i18n';
-import type { WorldMeta } from '../../shared/world/api';
 
 export const OFFLINE_GRACE_MS = 20_000;
 export const DONE_GRACE_MS = 25_000;
@@ -54,6 +53,8 @@ const FEED_LIMIT = 200;
 
 export interface OfficeDeps {
   names: NameStore;
+  /** Nome da empresa configurado no armazenamento local. */
+  companyName?: () => string;
   /** Nome escolhido pelo usuário para a sala da pasta (model/room-aliases.ts), se houver. */
   roomAlias?: (path: string) => string | undefined;
   version: string;
@@ -78,8 +79,6 @@ export interface OfficeDeps {
   updates?: () => UpdateStatus;
   /** Terminais interativos (PtyManager): estado do recurso e os abertos. */
   ptys?: () => { status: PtyStatus; list: PtyInfo[] };
-  /** Habblaud World (WorldService.meta; ver OfficeSnapshot.meta.world). */
-  world?: () => WorldMeta;
   now?: () => number;
 }
 
@@ -87,6 +86,7 @@ export interface OfficeDeps {
 export interface TranscriptSummary {
   title?: string;
   tasks: TaskItem[];
+  goal?: AgentInfo['goal'];
   stats: AgentStats;
   model?: string;
   gitBranch?: string;
@@ -171,6 +171,7 @@ function zeroStats(): AgentStats {
 
 function cloneAgent(a: AgentInfo): AgentInfo {
   const c: AgentInfo = { ...a, recent: a.recent.slice(), tasks: a.tasks.map((t) => ({ ...t })), stats: { ...a.stats } };
+  if (a.goal) c.goal = { ...a.goal };
   if (a.shells) c.shells = a.shells.map((j) => ({ ...j }));
   if (a.parts) c.parts = { ...a.parts };
   return c;
@@ -670,6 +671,7 @@ export class Office {
     };
     if (info.kind === 'main') set('title', t.title);
     set('tasks', t.tasks.map((x) => ({ ...x })));
+    set('goal', t.goal ? { ...t.goal } : undefined);
     set('stats', { ...t.stats });
     set('model', t.model);
     set('gitBranch', t.gitBranch);
@@ -751,6 +753,11 @@ export class Office {
    * Aviso de pedido de permissão (ou de pergunta do AskUserQuestion) vindo do hook; usa o dedupe do "precisa de
    * você" (o mesmo pedido, outro caminho).
    */
+  addNotice(notice: Notice): void {
+    this.pendingNotices.push(notice);
+    this.markDirty();
+  }
+
   noticePermission(id: string, what: string, kind: 'permission' | 'question' = 'permission'): void {
     const info = this.agents.get(id)?.info;
     if (!info) return;
@@ -957,14 +964,18 @@ export class Office {
     for (const r of this.demoSnap?.rooms ?? []) entries.set(r.id, { path: r.path, createdAt: r.createdAt });
     this.slots.sync(entries.keys(), now);
     const rooms: RoomInfo[] = [...entries]
-      .map(([id, r]) => ({
-        id,
-        name: this.roomName(id),
-        path: r.path,
-        slot: this.slots.slotOf(id) ?? 0,
-        seed: hash32(id),
-        createdAt: r.createdAt,
-      }))
+      .map(([id, r]) => {
+        const ws = detectWorkspace(r.path);
+        return {
+          id,
+          name: this.roomName(id),
+          path: r.path,
+          slot: this.slots.slotOf(id) ?? 0,
+          seed: hash32(id),
+          createdAt: r.createdAt,
+          ...(ws.workspaceId ? { workspaceId: ws.workspaceId, workspaceName: ws.workspaceName } : {}),
+        };
+      })
       .sort((a, b) => a.slot - b.slot);
     // festa/alarme (eventos do GitHub): das salas reais ou do demo
     for (const room of rooms) {
@@ -995,6 +1006,7 @@ export class Office {
       ...(ptys ? { ptys: ptys.list } : {}),
       meta: {
         demo: this.isDemo(),
+        companyName: this.deps.companyName?.() ?? 'William Pereira',
         sources: this.deps.sources(),
         startedAt: this.deps.startedAt,
         version: this.deps.version,
@@ -1003,7 +1015,6 @@ export class Office {
         messages: this.deps.messages !== undefined,
         ...(ptys ? { pty: ptys.status } : {}),
         updates: this.deps.updates?.(),
-        ...(this.deps.world ? { world: this.deps.world() } : {}),
       },
     };
   }

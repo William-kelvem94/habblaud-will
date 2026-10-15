@@ -9,7 +9,7 @@ import { tr } from '../../../shared/i18n';
 
 /**
  * Chip quadrado com a letra curta da conta ("C", "D") na cor da conta. Conta do Codex: o chip fica vazado (fundo
- * escuro, borda e letra na cor da conta, cantos em degrau): `data-provider="codex"`.
+ * escuro, borda na cor da conta, cantos em degrau) e o CSS troca a letra pelo símbolo nuvem-terminal.
  */
 export function createAccountChip(size: 'sm' | 'md' | 'lg' = 'sm'): HTMLElement {
   return h('span', { class: `ui-acc-chip ui-acc-chip--${size}` });

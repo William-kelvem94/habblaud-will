@@ -34,8 +34,7 @@ export class TopBar implements UiComponent {
   private pill: HTMLElement;
   private pillText: HTMLElement;
   private demoBadge: HTMLElement;
-  /** Linha de baixo da marca (conexão, versão, selos): o chip do Habblaud World entra aqui (ui/index.ts). */
-  private status: HTMLElement;
+  private companyName: HTMLElement;
   private counters = new Map<keyof Counters, CounterRefs>();
   private shellsBtn: HTMLButtonElement;
   /** Próximo agente do botão de shells (cliques seguidos passam por todos, do que espera há mais tempo). */
@@ -62,8 +61,25 @@ export class TopBar implements UiComponent {
     mark.append(logo);
 
     this.pillText = h('span', { class: 'ui-pill__text' });
-    this.pill = h('span', { class: 'ui-pill', role: 'status', attrs: { 'aria-live': 'polite' } }, h('span', { class: 'ui-pill__dot' }), this.pillText);
+    this.pill = h(
+      'button',
+      {
+        class: 'ui-pill',
+        type: 'button',
+        role: 'status',
+        attrs: { 'aria-live': 'polite', 'aria-haspopup': 'dialog' },
+        on: {
+          click: (ev) => {
+            ev.stopPropagation();
+            this.toggleDiagnostics();
+          },
+        },
+      },
+      h('span', { class: 'ui-pill__dot' }),
+      this.pillText,
+    );
     this.demoBadge = h('span', { class: 'ui-demo-badge', text: tr('Demonstração'), title: tr('Agentes de demonstração ligados (desligue em Configurações)'), hidden: true });
+    this.companyName = h('span', { class: 'ui-brand__company', text: 'William Pereira' });
 
     const counterWrap = h('div', { class: 'ui-counters', role: 'group', attrs: { 'aria-label': tr('Resumo do escritório') } });
     for (const c of COUNTERS) {
@@ -107,11 +123,10 @@ export class TopBar implements UiComponent {
     this.settingsBtn.setAttribute('aria-haspopup', 'dialog');
     this.spawnPanel = new SpawnPanel(ctx);
     ctx.root.append(this.spawnPanel.el);
-    this.spawnBtn = iconButton(ICONS.newAgent, tr('Novo agente: começa uma sessão do Claude Code no computador'), () => this.spawnPanel.toggle(this.spawnBtn), 'ui-btn-spawn');
+    this.spawnBtn = iconButton(ICONS.newAgent, tr('Novo agente: começa uma sessão interativa do Codex ou Claude Code'), () => this.spawnPanel.toggle(this.spawnBtn), 'ui-btn-spawn');
     this.spawnBtn.setAttribute('aria-haspopup', 'dialog');
     this.spawnBtn.hidden = true;
     this.version = new VersionChip(ctx, this.settingsBtn);
-    this.status = h('div', { class: 'ui-topbar__status' }, this.pill, this.version.el, this.demoBadge);
     const viewGroup = h(
       'div',
       { class: 'ui-btn-group', role: 'group', attrs: { 'aria-label': tr('Câmera') } },
@@ -141,23 +156,13 @@ export class TopBar implements UiComponent {
           'div',
           { class: 'ui-brand' },
           mark,
-          h('div', { class: 'ui-brand__text' }, wordmark(), this.status),
+          h('div', { class: 'ui-brand__text' }, wordmark(), this.companyName, h('div', { class: 'ui-topbar__status' }, this.pill, this.version.el, this.demoBadge)),
         ),
       ),
       counterWrap,
       this.usage.el,
       h('div', { class: 'ui-topbar__right' }, viewGroup, panelGroup),
     );
-  }
-
-  /** Acrescenta um selo à linha de status da marca, depois da versão (ex.: o chip do Habblaud World). */
-  addStatus(el: HTMLElement): void {
-    this.status.append(el);
-  }
-
-  /** Botão Mundo (troca de cena), ao lado do Timelapse. */
-  addSceneButton(btn: HTMLElement): void {
-    this.panelGroup.insertBefore(btn, this.timelapseBtn);
   }
 
   /** Acrescenta um botão de janela própria (ex.: Meu dia) ao começo do grupo de painéis. */
@@ -168,6 +173,8 @@ export class TopBar implements UiComponent {
   render(): void {
     const { store } = this.ctx;
     const snap = store.snapshot;
+    setText(this.companyName, snap?.meta.companyName ?? 'William Pereira');
+    setTitle(this.companyName, tr('Empresa neste escritório'));
 
     // Conexão.
     const conn = store.connection;
@@ -218,6 +225,98 @@ export class TopBar implements UiComponent {
     this.feedBtn.setAttribute('aria-pressed', String(this.ctx.isPanelOpen('feed')));
     this.timelapseBtn.setAttribute('aria-pressed', String(this.ctx.isTimelapseOpen()));
     setHidden(this.timelapseBtn, store.mock);
+
+    if (this.diagPopover) {
+      this.renderDiagnostics();
+    }
+  }
+
+  private diagPopover: HTMLElement | null = null;
+  private diagStatusEl: HTMLElement | null = null;
+  private diagLatencyEl: HTMLElement | null = null;
+  private diagLastIdEl: HTMLElement | null = null;
+  private diagEventsEl: HTMLElement | null = null;
+  private diagRetriesEl: HTMLElement | null = null;
+
+  private toggleDiagnostics(): void {
+    if (this.diagPopover) {
+      this.closeDiagnostics();
+      return;
+    }
+    this.openDiagnostics();
+  }
+
+  private closeDiagnostics(): void {
+    if (!this.diagPopover) return;
+    this.diagPopover.remove();
+    this.diagPopover = null;
+  }
+
+  private openDiagnostics(): void {
+    this.closeDiagnostics();
+
+    this.diagStatusEl = h('span', { class: 'ui-diag-popover__value' });
+    this.diagLatencyEl = h('span', { class: 'ui-diag-popover__value' });
+    this.diagLastIdEl = h('span', { class: 'ui-diag-popover__value' });
+    this.diagEventsEl = h('span', { class: 'ui-diag-popover__value' });
+    this.diagRetriesEl = h('span', { class: 'ui-diag-popover__value' });
+
+    const reconnectBtn = h('button', {
+      class: 'ui-diag-popover__btn',
+      type: 'button',
+      text: tr('🔄 Forçar reconexão'),
+      on: {
+        click: () => {
+          this.ctx.store.reconnectNow();
+          this.renderDiagnostics();
+        },
+      },
+    });
+
+    const popover = h(
+      'div',
+      { class: 'ui-diag-popover', attrs: { role: 'dialog', 'aria-label': tr('Diagnóstico da Conexão SSE') } },
+      h('div', { class: 'ui-diag-popover__title' }, h('span', { text: tr('📡 Telemetria SSE') })),
+      h('div', { class: 'ui-diag-popover__row' }, h('span', { class: 'ui-diag-popover__label', text: tr('Estado:') }), this.diagStatusEl),
+      h('div', { class: 'ui-diag-popover__row' }, h('span', { class: 'ui-diag-popover__label', text: tr('Latência:') }), this.diagLatencyEl),
+      h('div', { class: 'ui-diag-popover__row' }, h('span', { class: 'ui-diag-popover__label', text: tr('Último Event ID:') }), this.diagLastIdEl),
+      h('div', { class: 'ui-diag-popover__row' }, h('span', { class: 'ui-diag-popover__label', text: tr('Eventos lidos:') }), this.diagEventsEl),
+      h('div', { class: 'ui-diag-popover__row' }, h('span', { class: 'ui-diag-popover__label', text: tr('Reconexões:') }), this.diagRetriesEl),
+      reconnectBtn,
+    );
+
+    popover.addEventListener('click', (ev) => ev.stopPropagation());
+
+    const onDocClick = (e: MouseEvent) => {
+      if (!popover.contains(e.target as Node) && !this.pill.contains(e.target as Node)) {
+        this.closeDiagnostics();
+        document.removeEventListener('click', onDocClick);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        this.closeDiagnostics();
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener('click', onDocClick);
+      document.addEventListener('keydown', onKey);
+    }, 0);
+
+    this.pill.parentElement?.appendChild(popover);
+    this.diagPopover = popover;
+    this.renderDiagnostics();
+  }
+
+  private renderDiagnostics(): void {
+    if (!this.diagPopover) return;
+    const diag = this.ctx.store.diagnostics;
+    setText(this.diagStatusEl!, diag.state.toUpperCase());
+    setText(this.diagLatencyEl!, diag.lastLatencyMs !== null ? `~${diag.lastLatencyMs} ms` : '—');
+    setText(this.diagLastIdEl!, diag.lastEventId ? `#${diag.lastEventId}` : '—');
+    setText(this.diagEventsEl!, formatInt(diag.eventsReceived));
+    setText(this.diagRetriesEl!, formatInt(diag.reconnectAttempts));
   }
 
   private renderShells(n: number, now: number): void {

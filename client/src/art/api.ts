@@ -372,6 +372,10 @@ export interface ArtModule {
    * usa para a torcida comemorar junto com a TV.
    */
   footballLance?(t: number, seed: number): { lance: number; progress: number; right: boolean; period: number; goalAt: number };
+  /** (Opcional, aditivo) Sprite de mascotes do escritório (gato/cachorro). */
+  petSprite?(req: import('./pets').PetFrameRequest): Sprite;
   /** Avatar (cabeça + ombros) ampliado para a UI. `parts`: peças do personagem editado (ver AgentInfo.parts). */
   avatarCanvas(seed: number, opts?: { look?: 'f' | 'm'; sub?: boolean; scale?: number; parts?: AppearanceParts }): HTMLCanvasElement;
 }
+
+export type { PetFrameRequest, PetKind, PetPose } from './pets';

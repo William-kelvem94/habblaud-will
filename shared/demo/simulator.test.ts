@@ -94,7 +94,7 @@ describe('DemoSimulator: Codex', () => {
       const room = codex[0].roomId;
       expect(mains.some((a) => a.roomId === room && a.provider === undefined)).toBe(true);
       // Agente do Codex: conta própria, modelo gpt-*-codex, papel neutro, aprovação no lugar do modo de permissão, sem custo.
-      expect(codex[0]).toMatchObject({ account: '.codex', role: 'Agente principal', permissionMode: 'on-request', canMessage: true });
+      expect(codex[0]).toMatchObject({ account: '.codex', role: 'Agente principal', permissionMode: 'never', canMessage: true });
       expect(codex[0].model).toMatch(/^gpt-5\.\d-codex/);
       expect(codex[0].stats.costUSD).toBeUndefined();
       // Nunca grava provider 'claude'.

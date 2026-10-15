@@ -1,0 +1,89 @@
+{
+  "name": "habblaud-vscode",
+  "displayName": "Habblaud - Escritório Virtual",
+  "description": "Visualize seus agentes do Claude Code e Codex trabalhando em tempo real num escritório em pixel art dentro do VS Code.",
+  "version": "0.1.0",
+  "publisher": "marmotta",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "node ../../node_modules/esbuild/bin/esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "habblaud-container",
+          "title": "Habblaud",
+          "icon": "$(layout)"
+        }
+      ]
+    },
+    "views": {
+      "habblaud-container": [
+        {
+          "type": "webview",
+          "id": "habblaud.officeView",
+          "name": "Escritório Virtual"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "habblaud.openTab",
+        "title": "Habblaud: Abrir em Nova Aba",
+        "category": "Habblaud"
+      },
+      {
+        "command": "habblaud.openBrowser",
+        "title": "Habblaud: Abrir no Navegador Externo",
+        "category": "Habblaud"
+      },
+      {
+        "command": "habblaud.refresh",
+        "title": "Habblaud: Recarregar Visualização",
+        "category": "Habblaud",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "habblaud.connectServer",
+        "title": "Habblaud: Conectar a outro servidor...",
+        "category": "Habblaud"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "habblaud.openTab",
+          "when": "view == habblaud.officeView",
+          "group": "navigation"
+        },
+        {
+          "command": "habblaud.refresh",
+          "when": "view == habblaud.officeView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Habblaud",
+      "properties": {
+        "habblaud.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4747",
+          "description": "URL local do servidor Habblaud (padrão: http://127.0.0.1:4747)."
+        }
+      }
+    }
+  }
+}

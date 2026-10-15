@@ -121,8 +121,14 @@ export interface HistorySession {
   createParser: () => TerminalParser;
 }
 
+export interface CompressedHistorySession {
+  /** Rollout compactado descompactado em memória, com limite de tamanho. */
+  data: Buffer;
+  createParser: () => TerminalParser;
+}
+
 /** Resultado de resolve(): a sessão ou o erro HTTP. */
-export type HistoryResolveResult = HistorySession | { status: 400 | 404; error: string };
+export type HistoryResolveResult = HistorySession | CompressedHistorySession | { status: 400 | 404 | 413 | 422; error: string };
 
 /** O que as rotas /api/sessions/* precisam: um provedor sozinho ou o HistorySet. */
 export interface SessionLookup {

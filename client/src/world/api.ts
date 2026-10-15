@@ -1,8 +1,12 @@
 // CONTRATO do mundo (canvas do escritório) consumido pela UI (client/src/ui/**).
 // Implementação: client/src/world/index.ts -> createWorld().
 // Regra: mudanças aqui devem ser ADITIVAS.
+import type { RoomDecor } from './layout/decor';
+export type { RoomDecor } from './layout/decor';
 
 export type Selection = { type: 'agent'; id: string } | { type: 'room'; id: string } | null;
+export type CharacterPlayAction = 'wave' | 'coffee' | 'cheer' | 'sleep';
+export type CharacterGame = 'pingpong' | 'videogame' | 'rps' | 'arcade';
 
 export interface WorldOptions {
   /** Mostrar etiquetas com os nomes dos personagens. */
@@ -19,7 +23,14 @@ export interface WorldOptions {
   daylight?: DaylightMode;
   /** Tema visual: automático (segue o calendário; ver seasonalThemeFor), nenhum, Natal ou Halloween. */
   theme?: OfficeTheme;
+  /** Color grading applied to the pixel-art scene. */
+  palette?: ScenePalette;
+  /** (Opcional, aditivo) Barra retrô estilo arcade de cota/rate limit nos personagens. */
+  healthBars?: 'auto' | 'always' | 'off';
+  /** (Opcional, aditivo) Mascotes autônomos passeando pelo escritório (gato/cachorro). */
+  pets?: boolean;
 }
+export type ScenePalette = 'classic' | 'mint' | 'sunset' | 'noir';
 
 /** Tema que o renderer desenha: o escritório original ('none') ou um dos sazonais. */
 export type SeasonalTheme = 'none' | 'christmas' | 'halloween';
@@ -80,6 +91,10 @@ export interface WorldApi {
    * moedinhas, amizades/rivalidades com quem está lá agora e a roda de que participa. null se não está.
    */
   social?(agentId: string): AgentSocial | null;
+  /** Ação visual curta no personagem, como num jogo. Não altera o estado do agente/provedor. */
+  playAction?(agentId: string, action: CharacterPlayAction): boolean;
+  /** Inicia uma roda/jogo com colegas livres; null se o personagem não puder jogar agora. */
+  startGame?(agentId: string, game: CharacterGame): string[] | null;
   /** (Opcional, aditivo) Botão direito numa sala do escritório: id da sala e o ponto do clique (px da janela). */
   onRoomContextMenu?(cb: (roomId: string, at: { x: number; y: number }) => void): () => void;
   /** (Opcional, aditivo) Acontecimentos sociais (partidas e apostas) para o feed. */
@@ -91,13 +106,11 @@ export interface WorldApi {
    * snapshot do store é aplicado como carga inicial.
    */
   setPlayback?(p: WorldPlayback | null): void;
+  /** (Opcional, aditivo) Decoração customizada de uma sala (piso, tapete, mobis extras). */
+  getRoomDecor?(roomId: string): RoomDecor | null;
+  setRoomDecor?(roomId: string, decor: RoomDecor | null): void;
   /** (Opcional, aditivo) Sons do ambiente: teclado de quem trabalha à vista, elevador, rodas. */
   onSound?(cb: (cue: SoundCue) => void): () => void;
-  /**
-   * (Opcional, aditivo) Escritório fora da tela (a cena da cidade está aberta): para o desenho e o teclado da
-   * câmera; ao voltar, a simulação avança o tempo que passou (como com a aba em segundo plano).
-   */
-  setSuspended?(suspended: boolean): void;
   destroy(): void;
 }
 
@@ -155,4 +168,6 @@ export const DEFAULT_WORLD_OPTIONS: WorldOptions = {
   followSelected: false,
   dayNight: true,
   theme: 'auto',
+  healthBars: 'auto',
+  pets: true,
 };

@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute, join, normalize } from 'node:path';
+import { isAbsolute as isPosixAbsolute, join as posixJoin, normalize as posixNormalize } from 'node:path/posix';
 import { tr } from '../../shared/i18n';
 import type { DeliveryAttachment, DeliveryInfo, Provider, RecentSession, TerminalEntry } from '../../shared/types';
 import type { TerminalParser } from '../sources/terminal';
@@ -123,6 +124,9 @@ export function summaryOf(text: string, headline: string): string | undefined {
 /** Caminhos de arquivos de ver citados na resposta (absolutos, ou relativos à pasta do projeto). */
 export function linkedFiles(text: string, project?: string): string[] {
   const out = new Set<string>();
+  const absolute = (value: string): boolean => isAbsolute(value) || isPosixAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
+  const joinProject = (base: string, value: string): string => (/^\//.test(base) && !/^[A-Za-z]:[\\/]/.test(base) ? posixJoin : join)(base, value);
+  const normalizePath = (value: string): string => (isPosixAbsolute(value) && !/^[A-Za-z]:[\\/]/.test(value) ? posixNormalize : normalize)(value);
   const add = (raw: string) => {
     let p = raw.trim();
     try {
@@ -132,11 +136,11 @@ export function linkedFiles(text: string, project?: string): string[] {
     }
     if (p.startsWith('file://')) p = p.slice(7);
     if (/^[a-z]+:/i.test(p)) return;
-    if (!isAbsolute(p)) {
+    if (!absolute(p)) {
       if (!project) return;
-      p = join(project, p);
+      p = joinProject(project, p);
     }
-    p = normalize(p);
+    p = normalizePath(p);
     if (!pathProblem(p)) out.add(p);
   };
   for (const m of text.matchAll(LINK_RE)) add(m[1]);
@@ -319,8 +323,9 @@ export class DeliveryIndex {
       files.set(aid, { kind: 'capture', type: c.type, data: Buffer.from(c.data, 'base64'), name });
       attachments.push({ id: aid, name, kind: 'image', caption: tr('Tela capturada pelo agente'), capture: true });
     });
-    const headline = headlineOf(text);
-    const summary = summaryOf(text, headline);
+    const displayText = text.replace(/<!--\s*HABBLAUD_MEMORY:\{[^\r\n]*\}\s*-->/g, '').trim();
+    const headline = headlineOf(displayText);
+    const summary = summaryOf(displayText, headline);
     const agentName = s.agentId ? this.opts.agentName?.(s.agentId) : undefined;
     const provider: Provider | undefined = s.provider;
     return {

@@ -199,6 +199,7 @@ export class Overlay {
   private ox = 0;
   private oy = 0;
   private zoom = 1;
+  private currentOpts: WorldOptions | null = null;
 
   constructor(
     private readonly ctx: CanvasRenderingContext2D,
@@ -268,6 +269,7 @@ export class Overlay {
   }
 
   draw(now: number, opts: WorldOptions, sel: { agent: string | null; room: string | null; hover: string | null }): void {
+    this.currentOpts = opts;
     const { ctx, camera } = this;
     const dpr = camera.dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -312,7 +314,7 @@ export class Overlay {
     items.length = 0;
     const heads = this.renderer.heads;
     const showAll = opts.showNames && zoom >= 0.99;
-    for (const ch of this.sim.people()) {
+    for (const ch of this.sim.chars.values()) {
       const head = heads.get(ch.id);
       if (!head || !head.visible) continue;
       const hx = this.sx(head.x);
@@ -320,9 +322,7 @@ export class Overlay {
       if (hx < -120 || hx > vw + 120 || hy < -60 || hy > vh + 80) continue;
       const selected = sel.agent === ch.id;
       const hovered = sel.hover === ch.id;
-      // o visitante (cena Visita) sempre com o nome e o crachá
-      const visitor = ch === this.sim.visitor;
-      const labeled = selected || hovered || ch.mode === 'wait' || showAll || visitor;
+      const labeled = selected || hovered || ch.mode === 'wait' || showAll;
       const above = labeled && this.labelAbove(ch);
       const b = this.bubbleFor(ch, head, now, opts, selected, hovered);
       if (b) {
@@ -330,7 +330,7 @@ export class Overlay {
         items.push(b);
       }
       if (labeled) {
-        const prio = selected ? 100 : hovered ? 95 : visitor ? 92 : ch.mode === 'wait' ? 90 : ch.info.kind === 'main' ? 50 : 40;
+        const prio = selected ? 100 : hovered ? 95 : ch.mode === 'wait' ? 90 : ch.info.kind === 'main' ? 50 : 40;
         let l = this.labelPool[this.nl];
         if (!l) this.labelPool[this.nl] = l = { type: 'label', ch, head, prio, above, compact: false, x: 0, y: 0, w: 0, h: 0 };
         else {
@@ -419,7 +419,7 @@ export class Overlay {
       const anim = room ? buildAnim(room.phase, room.progress(now)) : null;
       // texto da placa quando ela fica grande o bastante para ler; senão, o nome flutuante
       const rect = this.renderer.signRect(vis);
-      const text = room ? room.info.name : vis.id === 'core:recepcao' ? 'Habblaud' : null;
+      const text = room ? (room.info.workspaceName ? `${room.info.workspaceName}/${room.info.name}` : room.info.name) : vis.id === 'core:recepcao' ? 'Habblaud' : null;
       const readable = !!rect && rect.h * zoom >= SIGN_MIN_PX;
       if (readable && rect && text && (!anim || anim.sign >= 1)) {
         const ax = this.sx(rect.x);
@@ -619,7 +619,7 @@ export class Overlay {
 
   private bubbleFor(ch: Character, head: HeadInfo, now: number, opts: WorldOptions, selected: boolean, hovered: boolean): Bubble | null {
     if (opts.bubbles === 'none') return null;
-    if (ch.mode === 'wait') return this.takeBubble(ch, head, '✋', this.sim.visit ? tr('Esperando o dono') : waitBubbleText(ch.info.waitingFor), 'alert', 100, 1, now);
+    if (ch.mode === 'wait') return this.takeBubble(ch, head, '✋', waitBubbleText(ch.info.waitingFor), 'alert', 100, 1, now);
     if (ch.bubbleText && now < ch.bubbleUntil) {
       const a = Math.min(1, (now - ch.bubbleAt) / 150, (ch.bubbleUntil - now) / 400);
       return this.takeBubble(ch, head, ch.bubbleIcon, ch.bubbleText, 'deliver', 90, a, ch.bubbleAt);
@@ -665,8 +665,6 @@ export class Overlay {
 
   /** Texto do balão de shell, refeito só quando o tempo exibido muda (não a cada frame). */
   private shellText(ch: Character, now: number): string {
-    // visita: só o rótulo, sem o cronômetro (nenhum tempo veio do mundo)
-    if (this.sim.visit) return ch.shellLabel;
     const age = now - ch.shellSince;
     const key = shellAgeKey(age);
     if (key !== ch.shellTextKey || !ch.shellText) {
@@ -874,8 +872,7 @@ export class Overlay {
     const acc = this.sim.accounts.get(ch.info.account);
     const nameW = this.measure(LABEL_FONT, ch.info.name);
     const chipW = acc ? 13 : 0;
-    const visitor = ch === this.sim.visitor;
-    const badgeW = visitor ? this.measure(BADGE_FONT, visitorBadge()) + 7 : ch.info.kind === 'sub' && !l.compact ? this.measure(BADGE_FONT, 'SUB') + 7 : 0;
+    const badgeW = ch.info.kind === 'sub' && !l.compact ? this.measure(BADGE_FONT, 'SUB') + 7 : 0;
     const codexW = ch.info.provider === 'codex' && !l.compact ? this.measure(BADGE_FONT, CODEX_BADGE) + 7 : 0;
     return { nameW, chipW, badgeW, codexW };
   }
@@ -954,7 +951,7 @@ export class Overlay {
       ctx.fill();
       ctx.font = BADGE_FONT;
       ctx.fillStyle = '#2a2000';
-      ctx.fillText(ch === this.sim.visitor ? visitorBadge() : 'SUB', cx + 3.5, y + h / 2 + 0.5);
+      ctx.fillText('SUB', cx + 3.5, y + h / 2 + 0.5);
       cx += badgeW + 3;
     } else if (sub) {
       // selo compacto: pontinho na cor do crachá
@@ -972,6 +969,32 @@ export class Overlay {
       ctx.fillStyle = '#e8ecf5';
       ctx.fillText(CODEX_BADGE, cx + 3.5, y + h / 2 + 0.5);
     }
+
+    // Barra de cota / energia (health bar arcade inspirada em jogos retrô)
+    const healthBarsMode = this.currentOpts?.healthBars ?? 'auto';
+    if (healthBarsMode !== 'off') {
+      const usage = acc?.usage?.fiveHour ?? acc?.usage?.sevenDay;
+      if (usage && typeof usage.utilization === 'number') {
+        const u = Math.max(0, Math.min(100, usage.utilization));
+        const hovered = sel.hover === ch.id;
+        if (healthBarsMode === 'always' || u > 0 || selected || hovered) {
+          const barW = Math.max(12, w - 8);
+          const barH = 2.5;
+          const bx = x + 4;
+          const by = y + h - 2;
+          ctx.fillStyle = 'rgba(0,0,0,0.65)';
+          ctx.beginPath();
+          ctx.roundRect(bx, by, barW, barH, 1);
+          ctx.fill();
+          const fillW = Math.max(1.5, Math.round(barW * (u / 100)));
+          const col = u > 85 ? '#ef4444' : u > 65 ? '#f59e0b' : '#10b981';
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.roundRect(bx, by, fillW, barH, 1);
+          ctx.fill();
+        }
+      }
+    }
   }
 }
 
@@ -979,9 +1002,4 @@ export class Overlay {
 export function sayIcon(text: string): string {
   const m = /\p{Extended_Pictographic}(?:\uFE0F)?/u.exec(text);
   return m ? m[0] : '💬';
-}
-
-/** Selo da etiqueta do visitante (cena Visita), no lugar do "SUB". */
-export function visitorBadge(): string {
-  return tr('visitante').toLocaleUpperCase();
 }

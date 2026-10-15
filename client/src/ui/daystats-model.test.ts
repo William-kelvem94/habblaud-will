@@ -30,23 +30,23 @@ const clock = (t: number) => new Date(t).toISOString().slice(11, 16);
 describe('Meu dia com o Codex', () => {
   const acc = (id: string, p: Partial<AccountDayStats> = {}): AccountDayStats => ({ id, name: id, short: 'X', color: '#000', ...totals(), ...p });
 
-  it('custo só do Claude Code: a conta do Codex mostra tokens, sem custo', () => {
+  it('mostra custo estimado por conta quando disponível, incluindo Codex', () => {
     const cards = accountCards(
       [acc('.claude', { ms: ms({ working: H }), counts: counts({ tokensIn: 10, costUSD: 1.5 }) }), acc('.codex', { ms: ms({ working: H }), counts: counts({ tokensIn: 2_000_000 }) })],
       (id) => id === '.codex',
     );
     expect(cards.map((c) => [c.id, c.codex, c.cost, c.tokens])).toEqual([
       ['.claude', false, 'US$ 1,50', '10'],
-      ['.codex', true, null, '2 M'],
+      ['.codex', true, '—', '2 M'],
     ]);
     // Sem a função, ninguém é do Codex (como antes).
     expect(accountCards([acc('.codex', { ms: ms({ working: H }) })])[0]).toMatchObject({ codex: false, cost: '—' });
   });
 
-  it('dica do custo diz que o Codex não grava custo', () => {
+  it('dica do custo identifica estimativas Codex e tarifas ausentes', () => {
     const day = (c: Partial<DayStats['totals']['counts']>) => ({ totals: { ...totals(), counts: counts(c), waitWallMs: 0 }, waits: [] }) as unknown as DayStats;
-    expect(highlights(day({ tokensIn: 5, costUSD: 2 }), clock, true).costHint).toBe('Só do Claude Code: o Codex não grava custo, só tokens');
-    expect(highlights(day({ tokensIn: 5 }), clock, true).costHint).toBe('O Codex não grava custo, só tokens');
+    expect(highlights(day({ tokensIn: 5, costUSD: 2 }), clock, true).costHint).toBe('Inclui estimativa Codex pelo modelo/tokens; não é cobrança da assinatura');
+    expect(highlights(day({ tokensIn: 5 }), clock, true).costHint).toBe('Sem estimativa: modelo Codex sem tarifa cadastrada');
     expect(highlights(day({ tokensIn: 5, costUSD: 2 }), clock).costHint).toBe('Custo calculado pelo próprio Claude Code');
   });
 });

@@ -6,7 +6,7 @@
 // As teclas não vazam para os atalhos do escritório (T, P, M, Esc...): Esc, por exemplo, interrompe o Claude.
 // Fechar a janela não encerra a sessão; "Encerrar" encerra.
 import type { AgentInfo, PtyInfo } from '../../../shared/types';
-import type { UiComponent, UiContext } from './context';
+import type { TerminalDockInfo, UiComponent, UiContext } from './context';
 import { h, iconButton, setHidden, setText } from './dom';
 import { ICONS } from './icons';
 import { maximizeButton, Movable } from './movable';
@@ -50,9 +50,12 @@ export class PtyPanel implements UiComponent, PtyControl {
   private accEl: HTMLElement;
   private roomEl: HTMLElement;
   private stateEl: HTMLElement;
+  private codexCommands: HTMLElement;
   private actions: TermActions;
   private tabs: TermTabs;
   private movable: Movable;
+  private minimized = false;
+  private minimizeButton: HTMLButtonElement;
   /** Avisado quando a janela aparece (o terminal ao vivo fecha: a janela é uma só). */
   onShow: (() => void) | null = null;
   /** Agente a selecionar quando aparecer no snapshot (sessão recém-aberta ou assumida). */
@@ -65,10 +68,35 @@ export class PtyPanel implements UiComponent, PtyControl {
     this.nameEl = h('strong', { class: 'ui-term__name' });
     this.roomEl = h('span', { class: 'ui-term__room' });
     this.stateEl = h('span', { class: 'ui-pty__state', role: 'status' });
+    this.codexCommands = h(
+      'details',
+      { class: 'ui-pty__commands', title: tr('Atalhos para comandos nativos do Codex') },
+      h('summary', { text: tr('Codex /') }),
+      h('div', { class: 'ui-pty__commands-list' }, ...['/help', '/approvals', '/model', '/status', '/compact', '/review', '/mcp', '/goal'].map((command) =>
+        h('button', {
+          class: 'ui-pty__command',
+          type: 'button',
+          text: command,
+          on: { click: () => {
+            this.pane?.sendCommand(command);
+            this.codexCommands.removeAttribute('open');
+          } },
+        }),
+      )),
+      h('span', { class: 'ui-pty__commands-hint', text: tr('Outros comandos aparecem em /help.') }),
+    );
     this.actions = new TermActions(ctx, this, false, async () => {
       if (this.info) await closePty(this.info.id);
     });
     this.tabs = new TermTabs(ctx);
+    this.minimizeButton = h('button', {
+      class: 'ui-icon-btn ui-icon-btn--sm ui-pty__minimize',
+      type: 'button',
+      text: '−',
+      title: tr('Minimizar terminal'),
+      attrs: { 'aria-label': tr('Minimizar terminal'), 'aria-pressed': 'false' },
+      on: { click: () => this.toggleMinimized() },
+    });
     const close = iconButton(ICONS.close, tr('Fechar a janela (a sessão continua rodando)'), () => this.close(), 'ui-icon-btn--sm ui-term__close');
     const bar = h(
       'div',
@@ -78,7 +106,9 @@ export class PtyPanel implements UiComponent, PtyControl {
       h('div', { class: 'ui-term__who' }, this.accEl, this.nameEl, this.roomEl),
       this.stateEl,
       h('span', { class: 'ui-pty__live', text: tr('interativo') }),
+      this.codexCommands,
       this.actions.el,
+      this.minimizeButton,
       maximizeButton(() => this.movable, () => requestAnimationFrame(() => this.pane?.refit(true))),
       close,
     );
@@ -111,6 +141,16 @@ export class PtyPanel implements UiComponent, PtyControl {
     return this.info !== null || this.external !== null;
   }
 
+  get minimizedInfo(): TerminalDockInfo | null {
+    if (!this.minimized || !this.isOpen) return null;
+    const id = this.agentId;
+    const agent = id ? this.ctx.agent(id) : undefined;
+    const provider = this.info?.provider ?? agent?.provider ?? 'claude';
+    const label = agent?.name ?? (provider === 'codex' ? 'Codex' : 'Claude Code');
+    const state = this.external ? tr('em outro terminal') : agent?.activity?.text ?? agent?.status ?? this.stateEl.textContent ?? '';
+    return { label, detail: `${provider === 'codex' ? 'Codex' : 'Claude Code'} · ${state}`.trim() };
+  }
+
   get agentId(): string | null {
     return this.info?.agentId ?? this.external;
   }
@@ -135,8 +175,23 @@ export class PtyPanel implements UiComponent, PtyControl {
     this.pane?.detach();
     this.info = null;
     this.external = null;
+    this.minimized = false;
+    this.el.classList.remove('is-minimized');
     this.el.hidden = true;
     this.ctx.invalidate();
+  }
+
+  restoreMinimized(): void {
+    if (!this.minimized || !this.isOpen) return;
+    this.minimized = false;
+    this.el.classList.remove('is-minimized');
+    this.syncMinimizeButton();
+    this.el.hidden = false;
+    this.ctx.invalidate();
+    requestAnimationFrame(() => {
+      this.pane?.refit(true);
+      if (this.info) this.pane?.focus();
+    });
   }
 
   async takeover(agentId: string): Promise<void> {
@@ -144,8 +199,8 @@ export class PtyPanel implements UiComponent, PtyControl {
     if (p) this.show(p, true);
   }
 
-  async newSession(cwd: string, account?: string): Promise<void> {
-    const p = await createPty(cwd, account);
+  async newSession(cwd: string, account?: string, provider: 'claude' | 'codex' = 'claude', prompt = '', model?: string, effort?: string): Promise<void> {
+    const p = await createPty(cwd, account, provider, prompt, model, effort);
     if (p) this.show(p, true);
   }
 
@@ -167,7 +222,8 @@ export class PtyPanel implements UiComponent, PtyControl {
       this.pendingSelect = null;
       this.ctx.select({ type: 'agent', id: agent.id });
     }
-    setText(this.nameEl, agent?.name ?? 'Claude Code');
+    setText(this.nameEl, agent?.name ?? (cur.provider === 'codex' ? 'Codex' : 'Claude Code'));
+    setHidden(this.codexCommands, cur.provider !== 'codex');
     updateAccountChip(this.accEl, this.ctx.account(cur.account), cur.account);
     setText(this.roomEl, agent?.title ?? cur.cwd);
     const ended = cur.exitedAt !== undefined;
@@ -184,6 +240,7 @@ export class PtyPanel implements UiComponent, PtyControl {
     const own = this.ptyOf(id);
     if (own) return this.show(own);
     const agent = this.ctx.agent(id);
+    setHidden(this.codexCommands, true);
     setText(this.nameEl, agent?.name ?? tr('Agente'));
     if (agent) updateAccountChip(this.accEl, this.ctx.account(agent.account), agent.account);
     const room = agent ? this.ctx.store.room(agent.roomId) : undefined;
@@ -205,8 +262,36 @@ export class PtyPanel implements UiComponent, PtyControl {
 
   private reveal(): void {
     if (this.el.hidden) this.movable.restore();
+    this.minimized = false;
+    this.el.classList.remove('is-minimized');
+    this.syncMinimizeButton();
     this.el.hidden = false;
     this.onShow?.();
+  }
+
+  private toggleMinimized(): void {
+    this.minimized = !this.minimized;
+    this.syncMinimizeButton();
+    if (this.minimized) {
+      this.el.hidden = true;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && this.el.contains(active)) active.blur();
+    } else {
+      this.el.hidden = false;
+      requestAnimationFrame(() => {
+        this.pane?.refit(true);
+        if (this.info) this.pane?.focus();
+      });
+    }
+    this.ctx.invalidate();
+  }
+
+  private syncMinimizeButton(): void {
+    const label = this.minimized ? tr('Restaurar terminal') : tr('Minimizar terminal');
+    this.minimizeButton.textContent = this.minimized ? '□' : '−';
+    this.minimizeButton.title = label;
+    this.minimizeButton.setAttribute('aria-label', label);
+    this.minimizeButton.setAttribute('aria-pressed', String(this.minimized));
   }
 
   private show(p: PtyInfo, fresh = false): void {

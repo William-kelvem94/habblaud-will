@@ -17,8 +17,8 @@ class FakeSource implements EventSourceLike {
     this.readyState = 2;
   }
 
-  fire(type: string, data?: unknown): void {
-    const ev = (data === undefined ? { type } : { type, data: JSON.stringify(data) }) as unknown as Event;
+  fire(type: string, data?: unknown, lastEventId?: string): void {
+    const ev = (data === undefined ? { type, lastEventId } : { type, data: JSON.stringify(data), lastEventId }) as unknown as Event;
     this.handlers.get(type)?.forEach((fn) => fn(ev));
   }
 
@@ -205,6 +205,20 @@ describe('OfficeStore: reconexão', () => {
     const bad = { type: 'snapshot', data: '{quebrado' } as unknown as Event;
     expect(() => (last() as unknown as { handlers: Map<string, ((e: Event) => void)[]> }).handlers.get('snapshot')![0](bad)).not.toThrow();
     expect(store.snapshot?.rev).toBe(1);
+  });
+
+  it('registra lastEventId e métricas de diagnóstico em eventos SSE', () => {
+    store.connect();
+    last().open();
+    expect(store.diagnostics.state).toBe('open');
+    expect(store.diagnostics.eventsReceived).toBe(0);
+
+    const snap = { rev: 2, serverTime: Date.now() - 50, rooms: [], agents: [], accounts: [], meta: { demo: false, sources: [], startedAt: 1, version: 't' } };
+    last().fire('snapshot', snap, '101');
+
+    expect(store.diagnostics.lastEventId).toBe('101');
+    expect(store.diagnostics.eventsReceived).toBe(1);
+    expect(store.diagnostics.lastLatencyMs).toBeGreaterThanOrEqual(0);
   });
 });
 

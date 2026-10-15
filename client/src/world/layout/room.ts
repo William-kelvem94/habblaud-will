@@ -15,6 +15,8 @@ import { DOOR_W, DOOR_X, TILE } from '../constants';
 import { AreaBuilder, type SpotOpts } from './builder';
 import { slotRect, slotSide } from './geometry';
 import type { AreaLayout, SpotDef, SpotKind } from './types';
+import type { RoomDecor } from './decor';
+import { findManifestForProp } from '../../art/manifest';
 
 export interface RoomInput {
   id: string;
@@ -66,7 +68,7 @@ export function roomVariant(seed: number): RoomVariant {
   return { mirror, meeting, left, right };
 }
 
-export function layoutProjectRoom(room: RoomInput, theme: RoomTheme): AreaLayout {
+export function layoutProjectRoom(room: RoomInput, theme: RoomTheme, decor?: RoomDecor | null): AreaLayout {
   const rect = slotRect(room.slot);
   const side = slotSide(room.slot);
   const rng = mulberry32(room.seed ^ 0x5eed);
@@ -75,7 +77,7 @@ export function layoutProjectRoom(room: RoomInput, theme: RoomTheme): AreaLayout
   const b = new AreaBuilder(room.id, 'room', rect);
   const area = b.area;
   area.side = side;
-  const wall: WallStyle = theme.wall;
+  const wall: WallStyle = decor?.wallBase ? { ...theme.wall, base: decor.wallBase } : theme.wall;
   const north = side === 'north';
   const door = { lx: DOOR_X, w: DOOR_W };
 
@@ -93,11 +95,13 @@ export function layoutProjectRoom(room: RoomInput, theme: RoomTheme): AreaLayout
   const wallItem = (kind: FurnitureKind, cx: number, variant?: string, o: { ly?: number; on?: 'face' | 'south'; order?: number } = {}) => b.wall(kind, mir ? 16 - cx : cx, variant, o);
   const rug = (lx: number, ly: number, w: number, h: number, color: string, seed: number) => b.rug(fx(lx, w), ly, w, h, color, seed);
 
-  // ---- piso: porcelanato claro (o banheiro é que usa azulejo); leve tom do tema dá identidade
-  b.floor('marble', 0, 0, 16, 12, room.seed);
-  area.floorTint = theme.carpet;
-  // tapete na cor do tema sob a ilha (identidade da sala)
-  rug(1.5, 3.25, 7, 5.5, theme.carpet, room.seed);
+  // ---- piso: porcelanato claro (ou customizado pelo decor); tom do tema dá identidade
+  const floorKind = decor?.floor ?? 'marble';
+  b.floor(floorKind, 0, 0, 16, 12, room.seed);
+  const carpetColor = decor?.carpetColor ?? theme.carpet;
+  area.floorTint = carpetColor;
+  // tapete sob a ilha (identidade da sala)
+  rug(1.5, 3.25, 7, 5.5, carpetColor, room.seed);
   // tapetinho na entrada
   rug(DOOR_X - 0.25, north ? 9.5 : 2, DOOR_W + 0.5, 1.25, shade(theme.carpet2, -0.1), room.seed + 1);
 
@@ -265,5 +269,20 @@ export function layoutProjectRoom(room: RoomInput, theme: RoomTheme): AreaLayout
   // ---- sombreamento quando a luz está apagada (salas ao norte: a mureta sul fica clara)
   const p = { x: rect.x * TILE, y: rect.y * TILE, w: rect.w * TILE, h: rect.h * TILE };
   area.shade = north ? { x: p.x, y: p.y, w: p.w, h: p.h - TILE } : { x: p.x, y: p.y, w: p.w, h: p.h };
+
+  // mobis decorativos adicionais customizados pelo usuário (Catálogo de Mobis baseado em manifestos)
+  if (decor?.extraProps?.length) {
+    for (const ep of decor.extraProps) {
+      if (ep.lx >= 1 && ep.lx <= 14 && ep.ly >= 2 && ep.ly <= 10) {
+        furn(ep.kind, ep.lx, ep.ly, ep.variant, { order: 0.75 });
+        const manifest = findManifestForProp(ep.kind, ep.variant);
+        if (manifest?.interactiveSpot) {
+          const is = manifest.interactiveSpot;
+          spot(is.kind, ep.lx, ep.ly, is.dir ?? 'down', is.offset ?? {});
+        }
+      }
+    }
+  }
+
   return b.build();
 }

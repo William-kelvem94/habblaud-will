@@ -337,7 +337,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string): HTMLEle
 /** Monta o markdown como nós de DOM (só textContent: seguro para texto vindo do transcript). */
 export function renderMarkdown(src: string): DocumentFragment {
   const frag = document.createDocumentFragment();
-  for (const b of tokenizeBlocks(src)) {
+  const visible = src.replace(/<!--\s*HABBLAUD_MEMORY:\{[^\r\n]*\}\s*-->/g, '').trim();
+  for (const b of tokenizeBlocks(visible)) {
     switch (b.type) {
       case 'paragraph': {
         const p = el('p', 'ui-md__p');

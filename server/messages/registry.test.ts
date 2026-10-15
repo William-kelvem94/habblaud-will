@@ -29,7 +29,7 @@ const SESSION = 'sess-1';
 const OTHER = 'acc:2';
 const SUB = `${SESSION}:a1b2c3`;
 
-function setup() {
+function setup(memoryOf?: (agent: AgentInfo) => string) {
   let now = 1_000_000;
   const clock = { now: () => now, advance: (ms: number) => (now += ms) };
   let registry: MessageRegistry | undefined;
@@ -49,6 +49,7 @@ function setup() {
     office,
     demoAgent: (id) => office.demoAgent(id),
     demoDeliver: (id, text) => office.deliverDemoMessage(id, text),
+    memoryOf,
     now: clock.now,
   });
   return { office, registry, clock };
@@ -114,11 +115,23 @@ describe('MessageRegistry: presença', () => {
 });
 
 describe('MessageRegistry: mandar', () => {
+  it('não anexa a memória por padrão; só inclui no envio com opt-in explícito', () => {
+    const { registry } = setup(() => 'preferência salva');
+    registry.inbox({ session: SESSION });
+    registry.send({ agentId: MAIN, text: 'mensagem comum' });
+    registry.send({ agentId: MAIN, text: 'mensagem contextual', includeMemory: true });
+    const batch = registry.inbox({ session: SESSION });
+    expect(batch[0].text).toBe('mensagem comum');
+    expect(batch[1].text).toContain('preferência salva');
+    expect(batch[1].text).toContain('Pedido atual de William:\nmensagem contextual');
+  });
+
   it('valida o corpo: agentId e texto, vazio e acima de 20.000 caracteres', () => {
     const { registry } = setup();
     registry.inbox({ session: SESSION });
     for (const bad of [null, {}, { agentId: MAIN }, { text: 'oi' }, { agentId: MAIN, text: 3 }]) expect(() => registry.send(bad)).toThrow(/agentId/);
     expect(() => registry.send({ agentId: MAIN, text: '  \n ' })).toThrow(/vazia/);
+    expect(() => registry.send({ agentId: MAIN, text: 'oi', includeMemory: 'sim' })).toThrow(/includeMemory/);
     expect(() => registry.send({ agentId: MAIN, text: 'x'.repeat(20_001) })).toThrow(/20\.000/);
     expect('message' in registry.send({ agentId: MAIN, text: 'x'.repeat(20_000) })).toBe(true);
   });

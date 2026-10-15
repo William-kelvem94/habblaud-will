@@ -1,6 +1,5 @@
 // Configurações (popover): opções do escritório, avisos, modo demonstração e Sobre (versão).
 import { access, remoteLogout } from '../net/access';
-import type { WorldSource } from '../net/world';
 import type { UiComponent, UiContext } from './context';
 import { h, iconButton, setAttr, setHidden, setText } from './dom';
 import { ICONS } from './icons';
@@ -9,8 +8,6 @@ import type { UiPrefs } from './prefs';
 import { SoundSettingsGroup } from './settings-sound';
 import type { SoundControl } from './sound';
 import { AboutGroup } from './version';
-import { WorldSettingsGroup } from './world/settings-world';
-import type { WorldScreen } from './world/world-model';
 import { LOCALE_STORAGE_KEY, LOCALES, normalizeLocale, tr, type Locale } from '../../../shared/i18n';
 
 type LanguageChoice = 'auto' | Locale;
@@ -43,7 +40,7 @@ interface SwitchRefs {
   hint: HTMLElement;
 }
 
-export function switchRow(label: string, hintText: string, onToggle: () => void): SwitchRefs & { row: HTMLElement } {
+function switchRow(label: string, hintText: string, onToggle: () => void): SwitchRefs & { row: HTMLElement } {
   const id = `ui-sw-${label.replace(/\W+/g, '-').toLowerCase()}`;
   const btn = h('button', { class: 'ui-switch', type: 'button', role: 'switch', attrs: { 'aria-checked': 'false', 'aria-labelledby': id } }, h('span', { class: 'ui-switch__knob' }));
   btn.addEventListener('click', onToggle);
@@ -52,7 +49,7 @@ export function switchRow(label: string, hintText: string, onToggle: () => void)
   return { row, btn, hint };
 }
 
-export function segmented<T extends string>(label: string, options: readonly [T, string][], onPick: (v: T) => void): { row: HTMLElement; set(v: T): void } {
+function segmented<T extends string>(label: string, options: readonly [T, string][], onPick: (v: T) => void): { row: HTMLElement; set(v: T): void } {
   const group = h('div', { class: 'ui-seg', role: 'radiogroup', attrs: { 'aria-label': label } });
   const buttons = options.map(([value, text]) => {
     const b = h('button', { class: 'ui-seg__opt', type: 'button', role: 'radio', text, attrs: { 'aria-checked': 'false' } });
@@ -90,15 +87,23 @@ export class SettingsPopover implements UiComponent {
   private liveliness: ReturnType<typeof segmented<UiPrefs['liveliness']>>;
   private daylight: ReturnType<typeof segmented<UiPrefs['daylight']>>;
   private theme: ReturnType<typeof segmented<UiPrefs['theme']>>;
+  private palette: ReturnType<typeof segmented<UiPrefs['palette']>>;
+  private healthBars: ReturnType<typeof segmented<UiPrefs['healthBars']>>;
   private language: ReturnType<typeof segmented<LanguageChoice>>;
   private soundGroup: SoundSettingsGroup;
   private demoGroup: HTMLElement;
   /** Só na página do celular (porta remota com login): sair deste aparelho. */
   private remoteGroup: HTMLElement;
   private logoutBtn: HTMLButtonElement;
-  /** Habblaud World (some sem `meta.world` ligado). */
-  private world: WorldSettingsGroup;
   private about: AboutGroup;
+  private companyName: HTMLInputElement;
+  private companyStatus: HTMLElement;
+  private companySave: HTMLButtonElement;
+  private companyLoaded = false;
+  private timelineLoaded = false;
+  private timelineList: HTMLElement;
+  private timelineStatus: HTMLElement;
+  private timelineClear: HTMLButtonElement;
   private demoBusy = false;
   private anchor: HTMLElement | null = null;
 
@@ -106,7 +111,6 @@ export class SettingsPopover implements UiComponent {
     private ctx: UiContext,
     private notifier: Notifier,
     sound: SoundControl,
-    world: WorldSource,
   ) {
     const sw = (key: BoolPref | 'demo', label: string, hint: string, onToggle: () => void) => {
       const r = switchRow(label, hint, onToggle);
@@ -146,14 +150,30 @@ export class SettingsPopover implements UiComponent {
     this.theme = segmented<UiPrefs['theme']>(
       tr('Tema do escritório'),
       [['auto', tr('Automático')], ['none', tr('Nenhum')], ['christmas', tr('Natal')], ['halloween', tr('Halloween')]],
-      (v) => {
-        ctx.updatePrefs({ theme: v });
-        // Com o World ligado e a conta aprovada, o tema também vai para o prédio (clicar de novo reenvia).
-        void this.world.onThemePicked(v);
-      },
+      (v) => ctx.updatePrefs({ theme: v }),
     );
     this.theme.row.append(h('span', { class: 'ui-set__hint', text: tr('Automático: Halloween em outubro e Natal de 1º de novembro a 26 de dezembro; no resto do ano, o visual original. Nenhum: sempre o original.') }));
+    this.palette = segmented<UiPrefs['palette']>(tr('Paleta do cenário'), [['classic', tr('Original')], ['mint', tr('Menta')], ['sunset', tr('Pôr do sol')], ['noir', tr('Noir')]], (v) => ctx.updatePrefs({ palette: v }));
+    this.palette.row.append(h('span', { class: 'ui-set__hint', text: tr('Aplica uma gradação de cor ao cenário; personagens e objetos continuam interativos.') }));
+    this.healthBars = segmented<UiPrefs['healthBars']>(
+      tr('Barras de energia (cota)'),
+      [
+        ['auto', tr('Automático')],
+        ['always', tr('Sempre')],
+        ['off', tr('Desligado')],
+      ],
+      (v) => ctx.updatePrefs({ healthBars: v }),
+    );
+    this.healthBars.row.append(h('span', { class: 'ui-set__hint', text: tr('Mostra uma barra estilo arcade na etiqueta dos personagens indicando o consumo da cota de 5h/semanal.') }));
     this.soundGroup = new SoundSettingsGroup(ctx, sound);
+
+    this.companyName = h('input', { class: 'ui-rename__input', type: 'text', attrs: { id: 'ui-company-name', maxlength: 80, 'aria-label': tr('Nome da empresa') } });
+    this.companyStatus = h('span', { class: 'ui-set__hint', role: 'status', attrs: { 'aria-live': 'polite' } });
+    this.companySave = h('button', { class: 'ui-btn', type: 'button', text: tr('Salvar'), on: { click: () => void this.saveCompanyName() } }) as HTMLButtonElement;
+    this.companyName.value = 'William Pereira';
+    this.timelineList = h('div', { class: 'ui-set__hint' });
+    this.timelineStatus = h('span', { class: 'ui-set__hint', role: 'status', attrs: { 'aria-live': 'polite' } });
+    this.timelineClear = h('button', { class: 'ui-btn ui-btn--sm', type: 'button', text: tr('Apagar todo o histórico do timelapse'), on: { click: () => void this.clearTimeline() } }) as HTMLButtonElement;
 
     // Nomes dos idiomas sempre na própria língua, para quem não entende o idioma atual achar o seu.
     this.language = segmented<LanguageChoice>(
@@ -190,8 +210,6 @@ export class SettingsPopover implements UiComponent {
       ),
     );
 
-    this.world = new WorldSettingsGroup(ctx, world);
-    this.theme.row.append(this.world.themeNote);
     this.about = new AboutGroup(ctx);
 
     const close = iconButton(ICONS.close, tr('Fechar configurações'), () => this.hide(), 'ui-icon-btn--sm');
@@ -199,12 +217,16 @@ export class SettingsPopover implements UiComponent {
       'div',
       { class: 'ui-popover ui-settings', role: 'dialog', tabIndex: -1, attrs: { 'aria-label': tr('Configurações'), id: 'ui-settings', popover: 'auto' } },
       h('div', { class: 'ui-popover__head' }, h('h2', { text: tr('Configurações') }), close),
-      h('div', { class: 'ui-set-group' }, h('h3', { text: tr('Aparência') }), this.theme.row),
+      h('div', { class: 'ui-set-group' }, h('h3', { text: tr('Aparência') }), this.theme.row, this.palette.row),
+      h('div', { class: 'ui-set-group' }, h('h3', { text: tr('Empresa') }), h('label', { class: 'ui-set__label', text: tr('Nome do escritório'), attrs: { for: 'ui-company-name' } }), this.companyName, h('div', { class: 'ui-memory__foot' }, this.companyStatus, this.companySave)),
+      h('div', { class: 'ui-set-group' }, h('h3', { text: tr('Histórico do timelapse') }), h('p', { class: 'ui-set__hint', text: tr('O timelapse guarda resumos de atividade localmente. Exporte dias individuais ou apague os arquivos salvos.') }), this.timelineList, h('div', { class: 'ui-memory__foot' }, this.timelineStatus, this.timelineClear)),
       h(
         'div',
         { class: 'ui-set-group' },
         h('h3', { text: tr('Escritório') }),
         sw('showNames', tr('Mostrar nomes'), tr('Etiqueta com o nome acima de cada personagem.'), flip('showNames')),
+        sw('pets', tr('Mascotes do escritório'), tr('Cão e gato passeiam pelas áreas comuns e deitam perto das mesas.'), flip('pets')),
+        this.healthBars.row,
         this.bubbles.row,
         this.liveliness.row,
         this.daylight.row,
@@ -219,7 +241,6 @@ export class SettingsPopover implements UiComponent {
       h('div', { class: 'ui-set-group' }, h('h3', { text: tr('Idioma') }), this.language.row),
       this.demoGroup,
       this.remoteGroup,
-      this.world.el,
       this.about.el,
     );
     this.el.addEventListener('toggle', () => {
@@ -258,14 +279,6 @@ export class SettingsPopover implements UiComponent {
     requestAnimationFrame(() => this.about.highlight());
   }
 
-  /** Abre (se fechado) e leva até a seção do Habblaud World, na tela pedida. */
-  showWorld(anchor: HTMLElement, screen?: WorldScreen): void {
-    this.world.show(screen);
-    if (!this.isOpen) this.toggle(anchor);
-    this.render();
-    requestAnimationFrame(() => this.world.highlight());
-  }
-
   hide(): void {
     if (typeof this.el.hidePopover === 'function' && this.isOpen) this.el.hidePopover();
     this.el.classList.remove('is-open');
@@ -287,6 +300,12 @@ export class SettingsPopover implements UiComponent {
   }
 
   render(): void {
+    if (!this.companyLoaded) {
+      this.companyLoaded = true;
+      void fetch('/api/company').then((r) => r.json()).then((v: { name?: string }) => { if (typeof v.name === 'string') this.companyName.value = v.name; }).catch(() => setText(this.companyStatus, tr('Não foi possível carregar o nome da empresa.')));
+    }
+    if (!this.timelineLoaded) { this.timelineLoaded = true; void this.loadTimelineDays(); }
+    setHidden(this.timelineClear, access().remote);
     const p = this.ctx.prefs;
     for (const [key, r] of this.switches) {
       const on = key === 'demo' ? !!this.ctx.store.liveSnapshot?.meta.demo : p[key];
@@ -297,11 +316,12 @@ export class SettingsPopover implements UiComponent {
     this.liveliness.set(p.liveliness);
     this.daylight.set(p.daylight);
     this.theme.set(p.theme);
+    this.palette.set(p.palette);
+    this.healthBars.set(p.healthBars);
     this.language.set(savedLanguage());
     this.soundGroup.render();
     setHidden(this.demoGroup, this.ctx.store.mock || access().remote);
     setHidden(this.remoteGroup, !access().remote);
-    this.world.render(this.isOpen);
     this.about.render();
 
     const notif = this.switches.get('browserNotifications')!;
@@ -316,6 +336,29 @@ export class SettingsPopover implements UiComponent {
     notif.btn.disabled = state === 'unsupported';
   }
 
+  private async loadTimelineDays(): Promise<void> {
+    try {
+      const res = await fetch('/api/timeline/days', { cache: 'no-store' });
+      if (!res.ok) throw new Error(tr('Não foi possível carregar os dias gravados.'));
+      const body = await res.json() as { days?: Array<{ day: string; bytes: number }> };
+      const days = Array.isArray(body.days) ? body.days : [];
+      this.timelineList.replaceChildren(...(days.length ? days.map((d) => h('a', { class: 'ui-set__hint', attrs: { href: `/api/timeline/${encodeURIComponent(d.day)}` }, text: `${d.day} · ${(d.bytes / 1024).toFixed(1)} KB` })) : [h('span', { class: 'ui-set__hint', text: tr('Nenhum dia de timelapse salvo.') })]));
+    } catch (err) { setText(this.timelineStatus, err instanceof Error ? err.message : tr('Não foi possível carregar os dias gravados.')); }
+  }
+
+  private async clearTimeline(): Promise<void> {
+    if (!window.confirm(tr('Apagar todos os arquivos do histórico do timelapse? Esta ação não pode ser desfeita.'))) return;
+    this.timelineClear.disabled = true;
+    try {
+      const res = await fetch('/api/timeline', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await res.json() as { error?: string; removed?: number };
+      if (!res.ok) throw new Error(body.error || tr('Não foi possível apagar o histórico.'));
+      setText(this.timelineStatus, tr('{0} arquivos de dia apagados.', [body.removed ?? 0]));
+      await this.loadTimelineDays();
+    } catch (err) { setText(this.timelineStatus, err instanceof Error ? err.message : tr('Não foi possível apagar o histórico.')); }
+    finally { this.timelineClear.disabled = false; }
+  }
+
   private async toggleNotifications(): Promise<void> {
     if (this.ctx.prefs.browserNotifications) {
       this.ctx.updatePrefs({ browserNotifications: false });
@@ -324,6 +367,22 @@ export class SettingsPopover implements UiComponent {
     const state = await this.notifier.enableBrowserNotifications();
     this.ctx.updatePrefs({ browserNotifications: state === 'granted' });
     if (state === 'denied') this.ctx.announce(tr('Notificações bloqueadas pelo navegador.'));
+  }
+
+  private async saveCompanyName(): Promise<void> {
+    this.companySave.disabled = true;
+    try {
+      const r = await fetch('/api/company', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.companyName.value }) });
+      const body = (await r.json()) as { name?: string; error?: string };
+      if (!r.ok) throw new Error(body.error ?? tr('não foi possível salvar'));
+      this.companyName.value = body.name ?? this.companyName.value;
+      setText(this.companyStatus, tr('Nome da empresa salvo.'));
+      this.ctx.invalidate();
+    } catch (err) {
+      setText(this.companyStatus, err instanceof Error ? err.message : tr('não foi possível salvar'));
+    } finally {
+      this.companySave.disabled = false;
+    }
   }
 
   private async toggleDemo(): Promise<void> {

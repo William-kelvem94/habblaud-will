@@ -56,6 +56,11 @@ export function findCodexBin(env: NodeJS.ProcessEnv, isExecutable: (p: string) =
     const p = join(dir, CODEX_BIN_NAME);
     if (isExecutable(p)) return p;
   }
+  // Instalação padrão do Codex CLI para Windows, mesmo quando o processo servidor herdou um PATH antigo.
+  if (process.platform === 'win32' && env.LOCALAPPDATA) {
+    const installed = join(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', CODEX_BIN_NAME);
+    if (isExecutable(installed)) return installed;
+  }
   return undefined;
 }
 

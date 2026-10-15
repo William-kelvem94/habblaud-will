@@ -3,9 +3,10 @@
 // archived_sessions/ modificados nos últimos 7 dias. De cada arquivo lê só o começo (session_meta: projeto; e a
 // primeira instrução: o título) e o fim (última atividade), com cache enquanto o mtime e o tamanho não mudam.
 // Subagentes e threads internos (guardian, revisão...) ficam de fora, como os subagentes do Claude Code.
-import { readdirSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { open, readdir, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
+import { zstdDecompressSync } from 'node:zlib';
 import type { RecentSession } from '../../../shared/types';
 import { errMsg, log } from '../../log';
 import { HISTORY_LIMIT, HISTORY_MAX_AGE_MS } from '../history';
@@ -54,6 +55,7 @@ interface Candidate {
   dir: string;
   mtimeMs: number;
   size: number;
+  compressed?: boolean;
 }
 
 export class CodexHistory implements HistoryProvider {
@@ -110,8 +112,8 @@ export class CodexHistory implements HistoryProvider {
   }
 
   /**
-   * Rollout do thread `sessionId` da conta, validado: conta conhecida, id com formato de UUID e o arquivo (com links
-   * resolvidos) dentro da pasta da conta. Um rollout só compactado (.jsonl.zst) ainda não dá para ler: 404.
+   * Rollout do thread `sessionId` da conta, validado: conta conhecida, id com formato de UUID e arquivo dentro da
+   * pasta da conta. Rollouts .zst são descompactados em memória com limites rígidos.
    */
   resolve(account: string, sessionId: string): HistoryResolveResult {
     if (!isThreadId(sessionId)) return { status: 400, error: tr('id de sessão inválido') };
@@ -125,7 +127,7 @@ export class CodexHistory implements HistoryProvider {
     }
     const id = sessionId.toLowerCase();
     let best: { path: string; mtimeMs: number } | undefined;
-    let compressed = false;
+    let compressed: { path: string; mtimeMs: number } | undefined;
     for (const dir of rolloutDirs(acc.dir)) {
       let names: string[];
       try {
@@ -137,7 +139,11 @@ export class CodexHistory implements HistoryProvider {
         const r = parseRolloutName(name);
         if (!r || r.threadId !== id) continue;
         if (r.compressed) {
-          compressed = true;
+          const path = join(dir, name);
+          try {
+            const st = statSync(path);
+            if (st.isFile() && (!compressed || st.mtimeMs > compressed.mtimeMs)) compressed = { path, mtimeMs: st.mtimeMs };
+          } catch { /* desapareceu durante a varredura */ }
           continue;
         }
         try {
@@ -152,8 +158,21 @@ export class CodexHistory implements HistoryProvider {
         }
       }
     }
-    if (best) return { path: best.path, createParser: createCodexTerminalParser };
-    return { status: 404, error: compressed ? tr('sessão compactada pelo Codex (.zst): ainda não dá para ler') : tr('sessão não encontrada') };
+    if (best && (!compressed || best.mtimeMs >= compressed.mtimeMs)) return { path: best.path, createParser: createCodexTerminalParser };
+    if (compressed) {
+      try {
+        const real = realpathSync(compressed.path);
+        if (!real.startsWith(root + sep)) return { status: 404, error: tr('sessão não encontrada') };
+        const packed = readFileSync(real);
+        if (packed.length > 32 * 1024 * 1024) return { status: 413, error: tr('sessão compactada grande demais para abrir') };
+        const data = zstdDecompressSync(packed, { maxOutputLength: 128 * 1024 * 1024 });
+        return { data, createParser: createCodexTerminalParser };
+      } catch (err) {
+        log.warnOnce(`codex-zstd:${errMsg(err)}`, tr('Histórico do Codex: não foi possível descompactar a conversa ({0}).', [errMsg(err)]));
+        return { status: 422, error: tr('não foi possível descompactar a conversa do Codex') };
+      }
+    }
+    return { status: 404, error: tr('sessão não encontrada') };
   }
 
   /** Rollouts (um por thread: o mais recente) modificados dentro da janela. */
@@ -168,13 +187,13 @@ export class CodexHistory implements HistoryProvider {
       }
       for (const name of names) {
         const r = parseRolloutName(name);
-        if (!r || r.compressed) continue;
+        if (!r) continue;
         const path = join(dir, name);
         try {
           const st = await stat(path);
           if (!st.isFile() || now - st.mtimeMs > this.maxAgeMs) continue;
           const prev = byThread.get(r.threadId);
-          if (!prev || st.mtimeMs > prev.mtimeMs) byThread.set(r.threadId, { account: acc.id, threadId: r.threadId, path, dir: acc.dir, mtimeMs: st.mtimeMs, size: st.size });
+          if (!prev || st.mtimeMs > prev.mtimeMs) byThread.set(r.threadId, { account: acc.id, threadId: r.threadId, path, dir: acc.dir, mtimeMs: st.mtimeMs, size: st.size, compressed: r.compressed });
         } catch {
           // apagado no meio da listagem
         }
@@ -188,7 +207,9 @@ export class CodexHistory implements HistoryProvider {
     if (hit && hit.mtimeMs === c.mtimeMs && hit.size === c.size) return hit.summary;
     let summary: RolloutSummary;
     try {
-      summary = await readRolloutSummary(c.path, c.size);
+      summary = c.compressed
+        ? readRolloutSummaryBuffer(zstdDecompressSync(readFileSync(c.path), { maxOutputLength: 128 * 1024 * 1024 }))
+        : await readRolloutSummary(c.path, c.size);
     } catch (err) {
       log.warnOnce(`codex-history:${errMsg(err)}`, tr('Histórico do Codex: rollout ilegível ({0}).', [errMsg(err)]));
       summary = {};
@@ -196,6 +217,31 @@ export class CodexHistory implements HistoryProvider {
     this.cache.set(c.path, { mtimeMs: c.mtimeMs, size: c.size, summary });
     return summary;
   }
+}
+
+function readRolloutSummaryBuffer(data: Buffer): RolloutSummary {
+  const text = data.toString('utf8');
+  const firstNewline = text.indexOf('\n');
+  const summary: RolloutSummary = {};
+  const meta = metaFromLine(firstNewline < 0 ? text : text.slice(0, firstNewline));
+  if (meta) summary.meta = meta;
+  const state = createCodexState(meta);
+  const ctx = { idPrefix: '', now: 0, activities: false };
+  const head = text.slice(firstNewline + 1, firstNewline + 1 + PROMPT_BYTES);
+  for (const line of head.split('\n')) {
+    if (!line.trim()) continue;
+    parseRolloutLine(state, line, ctx);
+    if (state.title !== undefined) break;
+  }
+  for (const line of text.slice(-TAIL_BYTES).split('\n')) {
+    const at = /"timestamp":"([^"]+)"/.exec(line.slice(0, 200))?.[1];
+    const ms = at ? Date.parse(at) : NaN;
+    if (!Number.isNaN(ms) && (summary.lastAt === undefined || ms > summary.lastAt)) summary.lastAt = ms;
+  }
+  const first = meta?.startedAt ?? state.firstAt;
+  if (first !== undefined) summary.firstAt = first;
+  if (state.title) summary.title = state.title;
+  return summary;
 }
 
 /** Lê o começo e o fim do rollout (de tamanho `size`): session_meta, primeira instrução e horários. */

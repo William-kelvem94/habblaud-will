@@ -1,10 +1,13 @@
 // Gaveta de detalhes (direita): agente ou sala selecionados. Agente do Codex: selo "Codex", textos dele (onde
 // responder, o terminal, a aprovação no lugar do modo de permissão, sem custo) e a dica dos hooks do Codex.
-import type { Activity, AgentInfo, FeedItem, RoomInfo, ShellJob, TaskItem } from '../../../shared/types';
+import type { Activity, AgentGoal, AgentInfo, FeedItem, RoomInfo, ShellJob, TaskItem } from '../../../shared/types';
 import { roomTheme } from '../art';
 import { createAvatarPlaceholder, updateAvatar } from './avatar';
 import { CharacterEditor } from './character-editor';
 import { MessageComposer } from './composer';
+import { AgentMemoryPanel } from './memory';
+import { AgentConversation } from './conversation';
+import { RoomDecorPopover } from './room-decor';
 import type { UiComponent, UiContext } from './context';
 import { copyText, h, iconButton, KeyedList, setAttr, setHidden, setStyleVar, setText, setTitle, setVariant } from './dom';
 import {
@@ -104,6 +107,28 @@ function updateTaskItem(li: HTMLElement, t: TaskItem, owner?: string): void {
   setHidden(ownerEl, !owner);
   setVariant(li, 'is-', t.status);
   setAttr(li, 'aria-label', `${t.title}: ${TASK_STATE[t.status]}`);
+}
+
+const GOAL_STATE: Record<AgentGoal['status'], string> = {
+  active: tr('ativa'), paused: tr('pausada'), blocked: tr('bloqueada'),
+  usage_limited: tr('limite de uso'), budget_limited: tr('limite de orçamento'), complete: tr('concluída'),
+};
+
+interface RoomGoalItem { key: string; goal: AgentGoal; owners: string[] }
+
+function createRoomGoalItem(): HTMLElement {
+  return h('li', { class: 'ui-room-goal' }, h('p', { class: 'ui-room-goal__objective' }), h('div', { class: 'ui-room-goal__meta' }, h('span', { class: 'ui-room-goal__status' }), h('span', { class: 'ui-room-goal__owners' })));
+}
+
+function updateRoomGoalItem(li: HTMLElement, item: RoomGoalItem): void {
+  const [objective, meta] = li.children as unknown as HTMLElement[];
+  const [status, owners] = meta.children as unknown as HTMLElement[];
+  setText(objective, item.goal.objective);
+  setTitle(objective, item.goal.objective);
+  setText(status, GOAL_STATE[item.goal.status]);
+  setVariant(li, 'is-', item.goal.status);
+  setText(owners, item.owners.join(', '));
+  setHidden(owners, item.owners.length === 0);
 }
 
 function createTimelineItem(): HTMLElement {
@@ -244,6 +269,8 @@ class AgentView {
   private actDetail: HTMLElement;
   /** Mandar mensagem ao agente principal pelo Habblaud (plugin habblaud-mensagens). */
   private composer: MessageComposer;
+  private memory: AgentMemoryPanel;
+  private conversation: AgentConversation;
   private msgSec: ReturnType<typeof section>;
   private tasksSec: ReturnType<typeof section>;
   private tasksBar: HTMLElement;
@@ -357,6 +384,8 @@ class AgentView {
     const nowSec = section(tr('Agora'), h('div', { class: 'ui-now' }, this.actIcon, h('div', { class: 'ui-now__body' }, this.actText, this.actTime)), this.actDetails);
     this.composer = new MessageComposer(ctx, 'drawer');
     this.msgSec = section(tr('Mandar mensagem'), this.composer.el);
+    this.memory = new AgentMemoryPanel();
+    this.conversation = new AgentConversation(ctx, () => this.toggleTerminal());
     // No celular a caixa fica presa no rodapé da gaveta enquanto a conversa rola (styles.css, .ui-sec--msg).
     this.msgSec.el.classList.add('ui-sec--msg');
     this.social = new SocialSection(ctx);
@@ -418,7 +447,9 @@ class AgentView {
       this.shellBox,
       this.shellsSec.el,
       nowSec.el,
+      this.conversation.el,
       this.msgSec.el,
+      this.memory.el,
       this.social.el,
       this.tasksSec.el,
       this.teamSec.el,
@@ -436,6 +467,8 @@ class AgentView {
     if (this.id === id) return;
     this.character.open(id);
     this.id = id;
+    this.conversation.setAgent(this.ctx.agent(id));
+    this.memory.setAgent(this.ctx.agent(id));
     this.last = null;
     this.history = [];
     this.timelineShown = TIMELINE_STEP;
@@ -445,6 +478,10 @@ class AgentView {
     this.shells.clear();
     this.actDetails.open = false;
     this.loadHistory();
+  }
+
+  close(): void {
+    this.conversation.close();
   }
 
   /** Histórico longo do agente (o pedido mais recente vale; ver historyGen). */
@@ -526,6 +563,9 @@ class AgentView {
     if (live) this.last = live;
     const a = this.last;
     if (!a) return;
+    this.conversation.setAgent(a);
+    this.memory.setAgent(a);
+    this.conversation.setAgent(a);
     const now = this.ctx.now();
     const account = this.ctx.account(a.account);
     const room = this.ctx.store.room(a.roomId);
@@ -808,6 +848,8 @@ class RoomView {
   private agents: KeyedList<AgentInfo>;
   private agentsSec: ReturnType<typeof section>;
   private agentsEmpty: HTMLElement;
+  private goalsSec: ReturnType<typeof section>;
+  private goals: KeyedList<RoomGoalItem>;
   private tasksSec: ReturnType<typeof section>;
   private tasksBar: HTMLElement;
   private tasks: KeyedList<{ task: TaskItem; owner: string; key: string }>;
@@ -815,6 +857,8 @@ class RoomView {
   private feedSec: ReturnType<typeof section>;
   private newBtn: HTMLButtonElement;
   private newMsg: HTMLElement;
+  private decorPopover: RoomDecorPopover;
+  private wsBadge: HTMLElement;
 
   constructor(
     private ctx: UiContext,
@@ -824,6 +868,7 @@ class RoomView {
     this.newMsg = h('p', { class: 'ui-actions__msg is-error', role: 'status', hidden: true });
     this.swatch = h('span', { class: 'ui-room-hero__swatch', attrs: { 'aria-hidden': 'true' } });
     this.name = h('h2', { class: 'ui-hero__name' });
+    this.wsBadge = h('span', { class: 'ui-room-hero__ws', hidden: true });
     // Lápis: o mesmo campo do botão direito na sala (ui/roomrename.ts), aberto embaixo do nome.
     this.renameBtn = iconButton(
       ICONS.pencil,
@@ -835,6 +880,33 @@ class RoomView {
       'ui-icon-btn--sm ui-room-hero__rename',
     );
     this.path = h('span', { class: 'ui-room-hero__path' });
+    const opsBtn = h('button', {
+      class: 'ui-btn',
+      type: 'button',
+      title: tr('Abrir painel de operações da empresa'),
+      on: {
+        click: () => {
+          const btn = document.querySelector('.ui-btn-ops') as HTMLButtonElement | null;
+          btn?.click();
+        },
+      },
+    });
+    opsBtn.innerHTML = ICONS.feed;
+    opsBtn.append(h('span', { text: tr('Operações') }));
+    this.decorPopover = new RoomDecorPopover(ctx);
+    ctx.root.append(this.decorPopover.el);
+    const decorBtn = h('button', {
+      class: 'ui-btn',
+      type: 'button',
+      title: tr('Personalizar decoração, piso e mobis da sala'),
+      on: {
+        click: () => {
+          this.decorPopover.open(this.id, decorBtn, this.last?.name ?? (this.last ? shortPath(this.last.path) : undefined));
+        },
+      },
+    });
+    decorBtn.innerHTML = ICONS.palette;
+    decorBtn.append(h('span', { text: tr('Decorar') }));
     const centerBtn = h('button', { class: 'ui-btn', type: 'button', title: tr('Levar a câmera até a sala'), on: { click: () => ctx.focusSelection() } });
     centerBtn.innerHTML = ICONS.center;
     centerBtn.append(h('span', { text: tr('Centralizar') }));
@@ -862,6 +934,10 @@ class RoomView {
       update: (row, a) => updateAgentRow(row, a, ctx.account(a.account), false, ctx.now(), ctx.store.snapshot?.agents),
     });
 
+    const goalsList = h('ul', { class: 'ui-room-goals' });
+    this.goalsSec = section(tr('Meta da sala'), goalsList);
+    this.goals = new KeyedList(goalsList, { key: (item) => item.key, create: createRoomGoalItem, update: updateRoomGoalItem });
+
     this.tasksBar = createProgress(tr('Progresso das tarefas da sala'));
     const tasksList = h('ul', { class: 'ui-tasks' });
     this.tasksSec = section(tr('Tarefas'), this.tasksBar, tasksList);
@@ -878,12 +954,13 @@ class RoomView {
         'div',
         { class: 'ui-room-hero' },
         this.swatch,
-        h('div', { class: 'ui-hero__text' }, h('div', { class: 'ui-room-hero__title' }, this.name, this.renameBtn), h('span', { class: 'ui-copy-row' }, this.path, copyButton(() => this.last?.path ?? '', tr('Copiar caminho')))),
+        h('div', { class: 'ui-hero__text' }, h('div', { class: 'ui-room-hero__title' }, this.name, this.wsBadge, this.renameBtn), h('span', { class: 'ui-copy-row' }, this.path, copyButton(() => this.last?.path ?? '', tr('Copiar caminho')))),
       ),
       this.gone,
-      h('div', { class: 'ui-status' }, accsEl, h('span', { class: 'ui-status__actions' }, this.newBtn, centerBtn)),
+      h('div', { class: 'ui-status' }, accsEl, h('span', { class: 'ui-status__actions' }, opsBtn, decorBtn, this.newBtn, centerBtn)),
       this.newMsg,
       this.agentsSec.el,
+      this.goalsSec.el,
       this.tasksSec.el,
       this.feedSec.el,
     );
@@ -911,6 +988,7 @@ class RoomView {
     this.id = id;
     this.last = null;
     this.agents.clear();
+    this.goals.clear();
     this.tasks.clear();
     this.feed.clear();
   }
@@ -921,6 +999,13 @@ class RoomView {
     const r = this.last;
     if (!r) return;
     setText(this.name, r.name);
+    if (r.workspaceName) {
+      setText(this.wsBadge, `📦 ${r.workspaceName}`);
+      setTitle(this.wsBadge, tr('Monorepo / Workspace compartilhado: {0}', [r.workspaceName]));
+      setHidden(this.wsBadge, false);
+    } else {
+      setHidden(this.wsBadge, true);
+    }
     setText(this.path, shortPath(r.path));
     setTitle(this.path, r.path);
     try {
@@ -939,6 +1024,21 @@ class RoomView {
     setText(this.agentsSec.extra, agents.length ? String(agents.length) : '');
     setHidden(this.agentsEmpty, agents.length > 0);
     this.agents.sync(ordered);
+
+    const roomGoals = new Map<string, RoomGoalItem>();
+    for (const agent of agents) {
+      const goal = agent.kind === 'main' ? agent.goal : undefined;
+      if (!goal) continue;
+      const key = goal.objective.trim().toLocaleLowerCase();
+      const item = roomGoals.get(key);
+      if (item) {
+        if (!item.owners.includes(agent.name)) item.owners.push(agent.name);
+        if (item.goal.updatedAt < goal.updatedAt) item.goal = goal;
+      } else roomGoals.set(key, { key, goal, owners: [agent.name] });
+    }
+    const goals = [...roomGoals.values()].sort((a, b) => b.goal.updatedAt - a.goal.updatedAt);
+    setHidden(this.goalsSec.el, goals.length === 0);
+    this.goals.sync(goals);
 
     const tp = aggregateTasks(agents);
     setHidden(this.tasksSec.el, tp.total === 0);
@@ -1005,7 +1105,10 @@ export class Drawer implements UiComponent {
     const mode = sel?.type ?? null;
     if (mode !== this.mode) {
       // Gaveta fechada ou fora do agente: o editor fecha, e ao reabrir começa do estado atual do agente.
-      if (this.mode === 'agent') this.agentView.character.close();
+      if (this.mode === 'agent') {
+        this.agentView.character.close();
+        this.agentView.close();
+      }
       this.mode = mode;
       this.body.replaceChildren(...(mode === 'agent' ? [this.agentView.el] : mode === 'room' ? [this.roomView.el] : []));
       this.body.scrollTop = 0;

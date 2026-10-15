@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Activity } from '../../shared/types';
 import { nameKey } from '../../shared/appearance';
@@ -9,7 +9,7 @@ import { setQuiet } from '../log';
 import { tempDir } from '../test/fixtures';
 import { NameStore } from './names';
 import { DONE_GRACE_MS, Office, OFFLINE_GRACE_MS, SNAPSHOT_RECENT } from './office';
-import { normalizeCwd, roomDisplayNames, SlotAllocator } from './rooms';
+import { detectWorkspace, findGitRoot, normalizeCwd, roomDisplayNames, SlotAllocator } from './rooms';
 
 setQuiet(true);
 
@@ -795,5 +795,49 @@ describe('Office: personagem do projeto', () => {
     expect(names.character('/p/api')?.owner).toBe('s2');
     office.switchSession('acc:2', 's2b');
     expect(names.character('/p/api')?.owner).toBe('s2b');
+  });
+});
+
+describe('workspace e monorepo', () => {
+  it('detecta a raiz do Git subindo diretórios', () => {
+    const tmp = tempDir();
+    try {
+      const gitDir = join(tmp.dir, '.git');
+      const sub1 = join(tmp.dir, 'packages', 'core');
+      const sub2 = join(tmp.dir, 'apps', 'web');
+      mkdirSync(gitDir, { recursive: true });
+      mkdirSync(sub1, { recursive: true });
+      mkdirSync(sub2, { recursive: true });
+
+      expect(findGitRoot(sub1)).toBe(tmp.dir);
+      expect(findGitRoot(sub2)).toBe(tmp.dir);
+
+      const ws1 = detectWorkspace(sub1);
+      const ws2 = detectWorkspace(sub2);
+      expect(ws1.workspaceId).toBe(ws2.workspaceId);
+      expect(ws1.workspaceName).toBe(basename(tmp.dir));
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it('anota workspaceId e workspaceName no snapshot das salas', () => {
+    const tmp = tempDir();
+    try {
+      const gitDir = join(tmp.dir, '.git');
+      const sub = join(tmp.dir, 'apps', 'web');
+      mkdirSync(gitDir, { recursive: true });
+      mkdirSync(sub, { recursive: true });
+
+      const { office, now } = makeOffice();
+      office.addMain({ id: 'acc:1', account: 'acc', sessionId: 's1', cwd: sub, role: 'x', startedAt: now(), status: 'working' });
+      const snap = office.commit().snapshot;
+      const room = snap.rooms.find((r) => r.path === sub);
+      expect(room).toBeDefined();
+      expect(room?.workspaceName).toBe(basename(tmp.dir));
+      expect(room?.workspaceId).toBeTruthy();
+    } finally {
+      tmp.cleanup();
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   cliArgs,
@@ -162,7 +162,7 @@ describe('novo agente em segundo plano (claude --bg)', () => {
     expect(cliArgs({ folder: '/p', prompt: '  ' })).toEqual(['--bg', '-n', 'Habblaud']);
   });
 
-  it('createCliRunner roda o binário na pasta, sem shell, e lê o id; erro vira a 1ª linha', async () => {
+  it.skipIf(process.platform === 'win32')('createCliRunner roda o binário na pasta, sem shell, e lê o id; erro vira a 1ª linha', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'hb-spawn-'));
     const bin = join(dir, 'claude');
     writeFileSync(
@@ -171,7 +171,7 @@ describe('novo agente em segundo plano (claude --bg)', () => {
     );
     chmodSync(bin, 0o755);
     writeFileSync(join(dir, 'trusted'), '');
-    expect(runnableClaudeBin({ PATH: `/nao/existe:${dir}` })).toBe(bin);
+    expect(runnableClaudeBin({ PATH: ['/nao/existe', dir].join(delimiter) })).toBe(bin);
     expect(runnableClaudeBin({ HABBLAUD_CLAUDE_BIN: join(dir, 'nada'), PATH: dir })).toBeUndefined();
     const run = createCliRunner(bin);
     expect(await run({ folder: dir, prompt: 'faça $(rm -rf x) && y' })).toEqual({ ok: true, id: '7eacc670' });

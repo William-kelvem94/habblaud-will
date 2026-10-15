@@ -22,9 +22,36 @@ import { AUDIO_BODY_MAX, type DictationService } from '../dictation/dictation';
 import type { DeliveryIndex } from '../deliveries/deliveries';
 import type { FileFetcher } from '../deliveries/fetcher';
 import { HOST_WAIT_MS } from '../host-wait';
+import { memoryKey } from '../company/store';
+import type { CodexSettingsClient } from '../codex/settings';
+import type { TeamChatStore } from '../company/team-chat';
 
 export interface ApiDeps {
   office: Office;
+  /** Identidade e memórias locais da empresa. */
+  company?: {
+    name(): string;
+    setName(value: unknown): string | undefined;
+    sharedMemory(): { text: string; updatedAt: number };
+    setSharedMemory(value: unknown): { text: string; updatedAt: number } | undefined;
+    snapshot(): { name: string; profiles: Record<string, { name: string; specialty: string; instructions: string; limits: string; updatedAt: number }>; tasks: Array<{ id: string; title: string; description: string; project: string; agentId: string; status: string; dueAt: number | null; dependsOn: string[]; createdAt: number; updatedAt: number }>; proposals: Array<{ id: string; agentId: string; text: string; source: string; scope: 'conversation'|'company'; createdAt: number; provider?: AgentInfo['provider']; account?: string; sessionId?: string; roomId?: string; memoryOwnerKey?: string; eventId?: string }>; ideas: Array<{ id: string; title: string; body: string; project: string; agentIds: string[]; createdAt: number }> };
+    profile(key: string): { name: string; specialty: string; instructions: string; limits: string; updatedAt: number };
+    setProfile(key: string, value: unknown): { name: string; specialty: string; instructions: string; limits: string; updatedAt: number } | undefined;
+    saveTask(value: unknown): unknown;
+    deleteTask(id: string): boolean;
+    saveIdea(value: unknown): { id: string; title: string; body: string; project: string; agentIds: string[]; createdAt: number } | undefined;
+    proposeMemory(agentId: string, text: unknown, source: unknown, scope?: unknown, owner?: AgentInfo): unknown;
+    proposal(id: string): { id: string; agentId: string; text: string; source: string; scope: 'conversation'|'company'; createdAt: number; provider?: AgentInfo['provider']; account?: string; sessionId?: string; roomId?: string; memoryOwnerKey?: string; eventId?: string } | undefined;
+    removeProposal(id: string): boolean;
+    memory(agent: AgentInfo): { text: string; updatedAt: number };
+    setMemory(agent: AgentInfo, value: unknown): { text: string; updatedAt: number } | undefined;
+    memoryByOwnerKey(key: string): { text: string; updatedAt: number };
+    setMemoryByOwnerKey(key: string, value: unknown): { text: string; updatedAt: number } | undefined;
+  };
+  teamChat?: TeamChatStore;
+  /** Ajusta modelo/esforço de um thread Codex via app-server local. */
+  codexSettings?: Pick<CodexSettingsClient, 'models' | 'defaults' | 'setDefaults'>;
+  codexAccounts?: () => Array<{ id: string; name: string }>;
   hub: Hub;
   accounts: AccountsService;
   sources: () => SourceInfo[];
@@ -89,11 +116,6 @@ export interface ApiDeps {
    * HABBLAUD_REMOTE_ALLOW libera. Requisição remota nunca vale pelo Host: só pelo que `allows` liberar.
    */
   remote?: { is(req: IncomingMessage): boolean; allows(feature: RemoteFeature): boolean };
-  /**
-   * Rotas do Habblaud World (/api/world/*, server/world/http.ts). Ausente = HABBLAUD_WORLD=0: 404 em todas. Só pela porta
-   * local com Host local: pela porta do celular, nem com login (403 `local_only`).
-   */
-  world?: (req: IncomingMessage, res: ServerResponse, url: URL) => void;
 }
 
 /** GET /api/agents/:id/terminal (ids nunca contêm '/'). */
@@ -103,6 +125,7 @@ const AGENT_ACTION_ROUTE = /^\/api\/agents\/[^/]+\/(stop|takeover)$/;
 
 /** PUT|DELETE /api/agents/:id/character: personagem do projeto (ver Office.setCharacter). */
 const CHARACTER_ROUTE = /^\/api\/agents\/([^/]+)\/character$/;
+const MEMORY_ROUTE = /^\/api\/agents\/([^/]+)\/memory$/;
 const NOT_EDITABLE = tr('agente não encontrado: só o agente principal de uma sessão aberta tem personagem editável');
 
 /** Conexão vinda do próprio computador (127.x, ::1 ou ::ffff:127.x). */
@@ -124,6 +147,10 @@ function isLocalOnlyPath(path: string): boolean {
     /^\/api\/permissions\/[^/]+\/wait$/.test(path) ||
     path === '/api/mod/inbox' ||
     path === '/api/mod/inbox/ack' ||
+    path === '/api/company' ||
+    path === '/api/company/shared-memory' ||
+    path.startsWith('/api/company/team-chat/') ||
+    MEMORY_ROUTE.test(path) ||
     path.startsWith('/api/codex/') ||
     path.startsWith('/api/host/')
   );
@@ -338,18 +365,6 @@ export function createApiHandler(deps: ApiDeps): (req: IncomingMessage, res: Ser
       sendJson(res, 403, { error: tr('rota só do próprio computador (hooks, plugins e o auxiliar do host)') });
       return true;
     }
-    if (path === '/api/world' || path.startsWith('/api/world/')) {
-      // A conta do Habblaud World age em seu nome: só o próprio computador, como o terminal. O Host local sozinho não
-      // basta (o Tailscale chega pelo loopback e o Host se imita): a porta remota nunca passa, nem com login.
-      if (!deps.world) {
-        req.resume();
-        sendJson(res, 404, { error: tr('rota desconhecida') });
-      } else if (isRemote(req) || !isLoopbackHost(req.headers.host)) {
-        req.resume();
-        sendJson(res, 403, { error: { code: 'local_only', message: tr('o Habblaud World só é usado pelo próprio computador (http://localhost)') } });
-      } else deps.world(req, res, url);
-      return true;
-    }
     if (path === '/api/stream') {
       if (method !== 'GET') methodNotAllowed(res, 'GET');
       else hub.attach(req, res);
@@ -358,6 +373,165 @@ export function createApiHandler(deps: ApiDeps): (req: IncomingMessage, res: Ser
     if (path === '/api/snapshot') {
       if (!isRead) methodNotAllowed(res, 'GET');
       else sendJson(res, 200, hub.current());
+      return true;
+    }
+    if (path === '/api/company') {
+      if (!deps.company) sendJson(res, 503, { error: tr('configuração da empresa indisponível') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('a configuração da empresa só pode ser acessada pelo próprio computador')) });
+      else if (isRead) sendJson(res, 200, deps.company.snapshot());
+      else if (method === 'PUT') {
+        readJson(req)
+          .then((body) => {
+            const name = deps.company!.setName((body as { name?: unknown } | null)?.name);
+            if (!name) return sendJson(res, 400, { error: tr('informe um nome de empresa de 1 a 80 caracteres') });
+            office.markDirty();
+            sendJson(res, 200, { name });
+          })
+          .catch((err) => fail(res, err));
+      } else methodNotAllowed(res, 'GET, PUT');
+      return true;
+    }
+    if (path === '/api/company/shared-memory') {
+      if (!deps.company) sendJson(res, 503, { error: tr('memória compartilhada indisponível') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('a memória compartilhada só pode ser acessada pelo próprio computador')) });
+      else if (isRead) sendJson(res, 200, { memory: deps.company.sharedMemory() });
+      else if (method === 'PUT') readJson(req).then((body) => {
+        const memory = deps.company!.setSharedMemory((body as { text?: unknown } | null)?.text);
+        if (!memory) return sendJson(res, 400, { error: tr('a memória compartilhada deve ter até 12.000 caracteres') });
+        sendJson(res, 200, { memory });
+      }).catch((err) => fail(res, err));
+      else methodNotAllowed(res, 'GET, PUT');
+      return true;
+    }
+    if (path === '/api/company/team-chat/threads' || path.startsWith('/api/company/team-chat/threads/')) {
+      const chat = deps.teamChat;
+      if (!chat) sendJson(res, 503, { error: tr('conversas da equipe indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('conversas da equipe só podem ser acessadas pelo próprio computador')) });
+      else if (path === '/api/company/team-chat/threads' && isRead) {
+        const threads = chat.listThreadSummaries().map((thread) => ({ ...thread, participants: thread.participants.map((id) => ({ id, name: id === 'user' ? 'William' : office.get(id)?.name ?? 'Agente encerrado' })) }));
+        sendJson(res, 200, { threads });
+      } else if (path === '/api/company/team-chat/threads' && method === 'POST') {
+        readJson(req).then((body) => {
+          const value = body as { title?: unknown; participantIds?: unknown };
+          const ids = Array.isArray(value?.participantIds) ? value.participantIds : [];
+          if (!ids.length || ids.some((id) => typeof id !== 'string' || !office.get(id) || office.get(id)?.kind !== 'main')) return sendJson(res, 400, { error: tr('selecione agentes principais disponíveis para a conversa') });
+          const thread = chat.createThread({ title: value?.title, participants: [...ids, 'user'] });
+          if (!thread) return sendJson(res, 400, { error: tr('informe um título e até 30 participantes') });
+          if (typeof value?.title === 'string' && ids.length) chat.appendMessage(thread.id, 'user', `Conversa iniciada por William: ${value.title.trim()}`);
+          sendJson(res, 200, { thread: chat.getThread(thread.id) });
+        }).catch((err) => fail(res, err));
+      } else {
+        const match = /^\/api\/company\/team-chat\/threads\/([^/]+)(?:\/messages)?$/.exec(path);
+        if (!match) sendJson(res, 404, { error: tr('conversa não encontrada') });
+        else {
+          let id: string;
+          try { id = decodeURIComponent(match[1]); }
+          catch { sendJson(res, 400, { error: tr('id inválido') }); return true; }
+          if (path.endsWith('/messages') && method === 'POST') readJson(req).then((body) => {
+            const value = body as { senderId?: unknown; text?: unknown };
+            const senderId = value?.senderId === undefined ? 'user' : value.senderId;
+            if (senderId !== 'user' && (typeof senderId !== 'string' || office.get(senderId)?.kind !== 'main')) return sendJson(res, 400, { error: tr('remetente inválido') });
+            const message = chat.appendMessage(id, senderId, value?.text);
+            if (!message) return sendJson(res, 400, { error: tr('mensagem inválida ou remetente fora da conversa') });
+            sendJson(res, 200, { message });
+          }).catch((err) => fail(res, err));
+          else if (path.endsWith('/messages')) methodNotAllowed(res, 'POST');
+          else if (isRead) {
+            const thread = chat.getThread(id);
+            if (!thread) sendJson(res, 404, { error: tr('conversa não encontrada') });
+            else sendJson(res, 200, { thread });
+          } else methodNotAllowed(res, 'GET');
+        }
+      }
+      return true;
+    }
+    if (path === '/api/company/ideas' && method === 'POST') {
+      if (!deps.company) sendJson(res, 503, { error: tr('dados da empresa indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('mural só pode ser acessado pelo próprio computador')) });
+      else readJson(req).then((body) => { const value = body as { title?: unknown; body?: unknown; project?: unknown; agentIds?: unknown }; const ids = Array.isArray(value?.agentIds) ? value.agentIds.filter((id): id is string => typeof id === 'string') : []; if (ids.some((id) => !office.get(id) || office.get(id)?.kind !== 'main')) return sendJson(res, 400, { error: tr('a equipe contém um agente indisponível') }); const idea = deps.company!.saveIdea(value); if (!idea) return sendJson(res, 400, { error: tr('informe a ideia e selecione pelo menos um agente') }); sendJson(res, 200, { idea }); }).catch((err) => fail(res, err));
+      return true;
+    }
+    if (path === '/api/company/tasks' || path.startsWith('/api/company/tasks/')) {
+      if (!deps.company) sendJson(res, 503, { error: tr('dados da empresa indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('dados da empresa só podem ser acessados pelo próprio computador')) });
+      else if (path === '/api/company/tasks' && method === 'POST') {
+        readJson(req).then((body) => { const task = deps.company!.saveTask(body); if (!task) return sendJson(res, 400, { error: tr('informe o título da tarefa') }); office.markDirty(); sendJson(res, 200, { task }); }).catch((err) => fail(res, err));
+      } else if (path.startsWith('/api/company/tasks/') && method === 'DELETE') {
+        const id = decodeURIComponent(path.slice('/api/company/tasks/'.length)); const ok = deps.company.deleteTask(id); if (ok) office.markDirty(); sendJson(res, ok ? 200 : 404, { ok });
+      } else methodNotAllowed(res, 'POST, DELETE');
+      return true;
+    }
+    if (path === '/api/company/profile' && method === 'PUT') {
+      if (!deps.company) sendJson(res, 503, { error: tr('perfis da empresa indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('perfis só podem ser acessados pelo próprio computador')) });
+      else readJson(req).then((body) => { const value = body as { agentId?: unknown; profile?: unknown }; const agent = typeof value?.agentId === 'string' ? office.get(value.agentId) : undefined; if (!agent || agent.kind !== 'main') return sendJson(res, 404, { error: tr('conversa do agente não encontrada') }); const profile = deps.company!.setProfile(memoryKey(agent), value.profile); sendJson(res, profile ? 200 : 400, { profile }); }).catch((err) => fail(res, err));
+      return true;
+    }
+    if (path === '/api/codex/defaults' || path === '/api/codex/models') {
+      const account = url.searchParams.get('account') ?? '';
+      const known = deps.codexAccounts?.().some((item) => item.id === account);
+      if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('configurações do Codex só podem ser alteradas neste computador')) });
+      else if (!account || !known) sendJson(res, 404, { error: tr('conta do Codex não encontrada') });
+      else if (!deps.codexSettings) sendJson(res, 503, { error: tr('controle de modelo do Codex indisponível') });
+      else if (path === '/api/codex/models' && method === 'GET') deps.codexSettings.models(account).then((models) => sendJson(res, 200, { models })).catch((err) => sendJson(res, 503, { error: err instanceof Error ? err.message : tr('não foi possível listar os modelos do Codex') }));
+      else if (path === '/api/codex/defaults' && method === 'GET') {
+        try { sendJson(res, 200, { defaults: deps.codexSettings.defaults(account) }); }
+        catch (err) { sendJson(res, 500, { error: err instanceof Error ? err.message : tr('não foi possível ler o padrão do Codex') }); }
+      } else if (path === '/api/codex/defaults' && method === 'PUT') readJson(req).then(async (body) => {
+        const value = body as { model?: unknown; effort?: unknown };
+        const model = typeof value?.model === 'string' ? value.model.trim() : '';
+        const effort = typeof value?.effort === 'string' ? value.effort : '';
+        try { const defaults = await deps.codexSettings!.setDefaults(account, model, effort); sendJson(res, 200, { defaults }); }
+        catch (err) { sendJson(res, 400, { error: err instanceof Error ? err.message : tr('não foi possível salvar o padrão do Codex') }); }
+      }).catch((err) => fail(res, err));
+      else methodNotAllowed(res, path.endsWith('/models') ? 'GET' : 'GET, PUT');
+      return true;
+    }
+    if (path === '/api/company/proposals' && method === 'POST') {
+      if (!deps.company) sendJson(res, 503, { error: tr('memórias indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('memórias só podem ser acessadas pelo próprio computador')) });
+      else readJson(req).then((body) => { const b = body as { agentId?: unknown; text?: unknown; source?: unknown; scope?: unknown }; const agent = typeof b?.agentId === 'string' ? office.get(b.agentId) : undefined; if (!agent || agent.kind !== 'main') return sendJson(res, 404, { error: tr('conversa do agente não encontrada') }); const proposal = deps.company!.proposeMemory(agent.id, b.text, b.source, b.scope, agent); sendJson(res, proposal ? 200 : 400, { proposal }); }).catch((err) => fail(res, err));
+      return true;
+    }
+    const proposalAction = /^\/api\/company\/proposals\/([^/]+)\/(approve|dismiss)$/.exec(path);
+    if (proposalAction && method === 'POST') {
+      if (!deps.company) sendJson(res, 503, { error: tr('memórias indisponíveis') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('memórias só podem ser acessadas pelo próprio computador')) });
+      else {
+        req.resume(); const proposal = deps.company.proposal(decodeURIComponent(proposalAction[1]));
+        if (!proposal) sendJson(res, 404, { error: tr('proposta não encontrada') });
+        else if (proposalAction[2] === 'dismiss') { deps.company.removeProposal(proposal.id); sendJson(res, 200, { ok: true }); }
+        else if (proposal.scope === 'company') { const previous = deps.company.sharedMemory().text; const memory = deps.company.setSharedMemory([previous, `• ${proposal.text}`].filter(Boolean).join('\n')); if (!memory) sendJson(res, 400, { error: tr('a memória compartilhada atingiu o limite de 12.000 caracteres') }); else { deps.company.removeProposal(proposal.id); sendJson(res, 200, { memory }); } }
+        else if (proposal.memoryOwnerKey) { const previous = deps.company.memoryByOwnerKey(proposal.memoryOwnerKey).text; const memory = deps.company.setMemoryByOwnerKey(proposal.memoryOwnerKey, [previous, `• ${proposal.text}`].filter(Boolean).join('\n')); if (!memory) sendJson(res, 400, { error: tr('não foi possível salvar a memória da equipe') }); else { deps.company.removeProposal(proposal.id); sendJson(res, 200, { memory }); } }
+        else { const agent = office.get(proposal.agentId); if (!agent || agent.kind !== 'main') sendJson(res, 404, { error: tr('conversa do agente não encontrada') }); else { const previous = deps.company.memory(agent).text; const memory = deps.company.setMemory(agent, [previous, `• ${proposal.text}`].filter(Boolean).join('\n')); deps.company.removeProposal(proposal.id); sendJson(res, memory ? 200 : 400, { memory }); } }
+      }
+      return true;
+    }
+    const memoryMatch = MEMORY_ROUTE.exec(path);
+    if (memoryMatch) {
+      if (!deps.company) sendJson(res, 503, { error: tr('memória da agente indisponível') });
+      else if (!trusted(req)) sendJson(res, 403, { error: denied(req, tr('a memória das agentes só pode ser acessada pelo próprio computador')) });
+      else {
+        let id: string;
+        try {
+          id = decodeURIComponent(memoryMatch[1]);
+        } catch {
+          sendJson(res, 400, { error: tr('id inválido') });
+          return true;
+        }
+        const agent = office.get(id);
+        if (!agent || agent.kind !== 'main') sendJson(res, 404, { error: tr('conversa do agente não encontrada') });
+        else if (isRead) sendJson(res, 200, { memory: deps.company.memory(agent) });
+        else if (method === 'PUT') {
+          readJson(req)
+            .then((body) => {
+              const memory = deps.company!.setMemory(agent, (body as { text?: unknown } | null)?.text);
+              if (!memory) return sendJson(res, 400, { error: tr('a memória deve ter até 12.000 caracteres') });
+              sendJson(res, 200, { memory });
+            })
+            .catch((err) => fail(res, err));
+        } else methodNotAllowed(res, 'GET, PUT');
+      }
       return true;
     }
     if (path === '/api/health') {
@@ -398,7 +572,6 @@ export function createApiHandler(deps: ApiDeps): (req: IncomingMessage, res: Ser
           messages: !!deps.messages && trusted(req, 'messages'),
           terminal: !!terminals && trusted(req, 'terminal'),
           spawn: !!deps.spawn && trusted(req, 'spawn'),
-          world: !!deps.world && !!deps.terminal && !remote && isLoopbackHost(req.headers.host),
         };
         sendJson(res, 200, access);
       }

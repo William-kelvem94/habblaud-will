@@ -12,7 +12,7 @@
 <p align="center"><a href="README.md">English</a> · <b>Português</b> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a></p>
 
 <p align="center">
-  <img alt="Node.js 22.12+" src="https://img.shields.io/badge/node-%E2%89%A522.12-5fa04e?logo=node.js&logoColor=white" />
+  <img alt="Node.js 22.15+" src="https://img.shields.io/badge/node-%E2%89%A522.15-5fa04e?logo=node.js&logoColor=white" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white" />
   <img alt="Docker" src="https://img.shields.io/badge/Docker-pronto-2496ed?logo=docker&logoColor=white" />
   <img alt="Zero dependências de runtime" src="https://img.shields.io/badge/depend%C3%AAncias%20de%20runtime-0-f08a3c" />
@@ -44,7 +44,6 @@ para dar a letra de cada conta). Nada sai do computador: o Habblaud não lê cre
 - [Como usar](#como-usar)
 - [Contas e uso (5 horas e semanal)](#contas-e-uso-5-horas-e-semanal)
 - [Configuração](#configuração)
-- [Habblaud World](#habblaud-world)
 - [Como funciona](#como-funciona)
 - [Privacidade e segurança](#privacidade-e-segurança)
 - [Desenvolvimento](#desenvolvimento)
@@ -119,16 +118,36 @@ ela, e o endereço antigo apaga e é desmontado. Assim o prédio não fica com b
   </tr>
 </table>
 
+### 🐾 Mascotes, Decoração & Extensão VS Code
+
+- **Mascotes do Escritório:** Biscoito (o cão) e Pipoca (o gato) passeiam pelas salas e áreas comuns, cochilam perto dos agentes e recebem carinho ao passar o cursor ou clicar neles (opção ativável/desativável nas Configurações).
+- **Barras de Energia Arcade:** Indicador retrô de saúde acima do crachá de cada personagem exibindo a cota e o limite de uso de 5 horas e semanal em verde, amarelo e vermelho arcade.
+- **Catálogo de Mobis & Decoração:** Personalize qualquer sala com pisos variados (madeira nobre, mármore, concreto, carpete, xadrez, azulejo), cores de tapete central e mobis interativos extras (fliperama retrô, cafeteira privativa, bonsai, monstera, estante, bebedouro).
+- **Extensão Oficial para VS Code:** Acompanhe seu escritório virtual diretamente no Activity Bar lateral ou numa aba dedicada do VS Code sem precisar abrir o navegador (`extensions/vscode`).
+
 > As imagens acima usam o **modo demonstração** (projetos, pessoas e contas fictícios).
 
 ## Instalação
 
 ### Requisitos
 
-- **macOS** (testado) ou Linux.
+- **macOS** ou Linux. No Windows, use **WSL2** (Ubuntu recomendado) ou Docker Desktop com backend WSL2; a execução Node nativa no PowerShell ainda não é suportada.
 - **[Claude Code](https://code.claude.com)** instalado, com uma ou mais contas (2.1.287 ou mais novo para o mod).
-- **Node.js 22.12+** e **npm** (desenvolvido com o Node 24; o Docker já usa o Node 24).
+- **Node.js 22.15+** e **npm** (desenvolvido com o Node 24; o Docker já usa o Node 24).
 - **Docker Desktop** (ou Docker Engine com Compose v2), se for rodar em container.
+
+#### Windows
+
+O caminho recomendado no Windows é o WSL2. No PowerShell como administrador, instale-o e reinicie o computador:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Abra o Ubuntu pelo menu Iniciar e siga os passos de Linux desta página dentro do terminal WSL. Mantenha o repositório
+no sistema de arquivos do WSL (`~/...`) para evitar lentidão em pastas `/mnt/c`. Para usar Docker, instale Docker
+Desktop, habilite a integração com Ubuntu em **Settings → Resources → WSL Integration** e rode os comandos Docker
+no terminal WSL. Se `wsl --status` disser que o WSL não está disponível, atualize-o com `wsl --update` e reinicie.
 
 ### 1. Baixe o projeto
 
@@ -498,7 +517,7 @@ feed continua mostrando o que acontece agora.
 
 O servidor grava a linha do tempo **a partir do momento em que está ligado** (não dá para reconstruir o passado):
 resumos do que o escritório mostra, sem conversas, em `~/.habblaud/timeline/` (no Docker, no volume de dados), com
-limite de tamanho por dia e os últimos **7 dias** guardados. Para não gravar: `HABBLAUD_TIMELINE=0`. Detalhes em
+limite de tamanho por dia e, por padrão, os últimos **7 dias** guardados (ajuste com `HABBLAUD_TIMELINE_RETENTION_DAYS`; use `0` para manter tudo). Em Configurações → Histórico do timelapse, você pode exportar cada dia em JSONL ou apagar as gravações. Para não gravar: `HABBLAUD_TIMELINE=0`. Detalhes em
 [`server/README.md`](server/README.md#linha-do-tempo-timelapse).
 
 Os personagens andam mais rápido no replay, mas nas velocidades altas quem fica pouco tempo no escritório quase não
@@ -558,6 +577,36 @@ e espera o próximo pedido, dar uma instrução nova ou corrigir o rumo, sem pro
   Leia o aviso em [Privacidade e segurança](#privacidade-e-segurança).
   Pelo [celular com login](#celular-com-login-e-https-aprovando-pedidos), só com `messages` no `HABBLAUD_REMOTE_ALLOW`.
 - No modo demonstração, os agentes fictícios também recebem mensagens (de mentira).
+
+### Operação da empresa
+
+O botão **Operação da empresa** na barra superior reúne tarefas, funções, aprendizados e resultados. Os dados ficam
+localmente em `~/.habblaud/company.json`.
+
+- **Caixa de tarefas:** descreva o resultado, projeto, responsável e prazo; acompanhe o estado e dependências. Uma tarefa
+  com dependência aberta não pode ser enviada. **Enviar ao agente** aparece quando a sessão aceita mensagens; o envio
+  coloca o pedido na conversa e marca a tarefa como em andamento.
+- **Função do agente:** defina nome de trabalho, especialidade, instruções e limites para cada conversa. O perfil é
+  anexado às próximas mensagens enviadas pelo Habblaud, junto da memória daquela conversa.
+- **Codex:** escolha o modelo e a força de raciocínio disponíveis para a conta. O Habblaud salva esses padrões no
+  `config.toml` daquela conta do Codex; novas conversas os usam. Conversas já abertas mantêm as configurações atuais.
+- **Memória automática:** nas respostas concluídas, o servidor procura aprendizados duráveis que o agente marcou e os
+  salva na memória da conversa. O painel Operação atualiza enquanto estiver aberto; o servidor verifica o histórico a
+  cada 2 segundos. Contexto útil a toda a equipe pode ser marcado como memória compartilhada. Segredos, credenciais e
+  fatos temporários não devem ser registrados.
+- **Memória revisável:** use **Propor aprendizado** quando quiser revisar e salvar um trecho manualmente. As propostas
+  continuam aguardando sua aprovação; elas ficam separadas da atualização automática.
+- **Memória compartilhada:** no painel Operação, registre princípios e contexto úteis para toda a equipe. Ela é enviada
+  junto das próximas mensagens a qualquer agente. A memória automática compartilhada também aparece aqui.
+- **Resultados:** as entregas recentes aparecem na operação e continuam disponíveis no painel **Entregas**, que abre a
+  resposta completa e os arquivos gerados.
+- **Visão de operação:** o painel resume agentes ativos, tarefas abertas, bloqueadas, atrasadas e concluídas, além de
+  atividade, tokens e custo reportados por agente. O Codex não informa custo.
+
+O painel é local, como as outras funções administrativas da empresa; esses dados não são incluídos no acesso remoto.
+ A atualização automática depende de respostas enviadas pelo Habblaud e do histórico local da sessão. Mensagens digitadas
+diretamente em um terminal não recebem a instrução de memória do Habblaud. O marcador usado pelo agente fica oculto na
+conversa normal.
 
 ### Editar o personagem
 
@@ -716,6 +765,7 @@ Tudo funciona sem configurar nada. Se precisar ajustar, use variáveis de ambien
 | `HABBLAUD_CLAUDE_DIRS` | detecção automática | Pastas das contas, separadas por vírgula (ex.: `/caminho/conta1,/caminho/conta2`). |
 | `HABBLAUD_DATA_DIR` | `~/.habblaud` | Onde o Habblaud guarda os próprios dados (nomes dos personagens e das salas, linha do tempo do timelapse e estatísticas do Meu dia). |
 | `HABBLAUD_TIMELINE` | ligado | `0` desliga a gravação da linha do tempo (os dias já gravados continuam no timelapse). No Docker fica sempre ligado. |
+| `HABBLAUD_TIMELINE_RETENTION_DAYS` | `7` | Dias de timelapse mantidos (de `0` a `3650`; `0` mantém todos). Aplica-se à limpeza automática na próxima virada de dia. |
 | `HABBLAUD_USAGE_DIR` | `~/.habblaud/usage` | Onde o mod (ou o tap de statusline) grava o uso. |
 | `HABBLAUD_DEMO` | desligado | `1` liga o modo demonstração ao iniciar. |
 | `HABBLAUD_ALLOWED_HOSTS` | — | Nomes extras aceitos no endereço (ex.: `meu-mac.local`), além de `localhost` e IPs. |
@@ -732,110 +782,10 @@ Tudo funciona sem configurar nada. Se precisar ajustar, use variáveis de ambien
 | `HABBLAUD_ACCOUNTS` | — | JSON para personalizar nome, letra ou cor, casado pelo nome da pasta da conta. Ex.: `[{"id":".claude-conta2","name":"Trabalho","short":"T","color":"#5cc97b"}]`. |
 
 **No Docker**, valem `HABBLAUD_PORT`, `HABBLAUD_BIND`, `HABBLAUD_ALLOWED_HOSTS`, `HABBLAUD_DEMO`, `HABBLAUD_TERMINAL`,
-`HABBLAUD_MENSAGENS`, `HABBLAUD_CODEX`, `HABBLAUD_UPDATE_CHECK`, `HABBLAUD_LANG`, `HABBLAUD_PTY`, os `HABBLAUD_WORLD*` e os
+`HABBLAUD_MENSAGENS`, `HABBLAUD_CODEX`, `HABBLAUD_UPDATE_CHECK`, `HABBLAUD_LANG`, `HABBLAUD_PTY` e os
 `HABBLAUD_REMOTE_*` (no `.env` ou no ambiente) e `HABBLAUD_CLAUDE_DIRS`, `HABBLAUD_CODEX_DIRS`, `HABBLAUD_USAGE_DIR` e
 `HABBLAUD_ACCOUNTS` (lidas pelo `docker:up` no host); as demais ficam fixas dentro do container. Opções: `npm run docker:up -- --no-build` (sobe sem reconstruir),
 `npm run docker:down` (para) e `npm run docker:logs` (acompanha os logs).
-
-## Habblaud World
-
-O Habblaud World é uma cidade online em pixel art onde cada Habblaud vira um prédio, aceso ao vivo enquanto os agentes
-trabalham, e cada pessoa passeia com um personagem. **Está em desenvolvimento e vem desligado por padrão:** sem
-`HABBLAUD_WORLD_URL`, nada do World aparece na interface e nada sai do computador.
-
-**Como ligar.** As variáveis abaixo (no `.env` ou no ambiente) apontam o Habblaud para um servidor do mundo. A seção
-aparece em **Configurações › Habblaud World** e só funciona pelo próprio computador (nunca pela porta do celular); a
-conta fica só aqui, em `~/.habblaud/world.json` (permissão 600; no Docker, no volume `/data`).
-
-| Variável | Padrão | Para quê |
-| --- | --- | --- |
-| `HABBLAUD_WORLD_URL` | — (desligado) | Endereço do servidor do mundo, só `https://` ou `wss://` (sem caminho). |
-| `HABBLAUD_WORLD` | ligado | `0` esconde tudo do World (rotas e interface), mesmo com a URL. |
-| `HABBLAUD_WORLD_DEV` | desligado | `1` aceita um servidor do mundo local sem TLS: `http://127.0.0.1:<porta>` (o `npm run dev` já aceita) ou, de dentro do Docker, `http://host.docker.internal:<porta>`. |
-
-**Privacidade.** Nada do seu trabalho sai do computador. Do prédio saem só o tema, um andar por sala aberta (com um
-código aleatório que muda todo dia) e, de cada agente, se é principal ou subagente, a ferramenta, o status, a
-aparência, um nome sorteado e a faixa de tarefas concluídas no dia. Caminhos, nomes de projeto, títulos, comandos,
-mensagens, código, custo, modelo, branch e a sua conta do Claude nunca saem. A lista completa, campo a campo:
-[docs/world/privacidade.md](docs/world/privacidade.md). **Ver o que foi enviado**, no cartão Seu prédio, mostra o JSON
-exato da última remessa, com o tamanho em bytes e a resposta do mundo.
-
-**Conta e lista de espera.** Cadastro com e-mail e senha (12 caracteres ou mais; senhas que já vazaram são recusadas),
-código de 6 dígitos por e-mail e o aceite dos Termos de Uso e da Política de Privacidade. Toda conta entra numa lista de
-espera, e o acesso é liberado por lotes: o Habblaud aberto confere sozinho a cada 30 minutos. Até 3 computadores por
-conta (**Dispositivos**, com revogar).
-
-**Personagem.** Nome de jogador (3 a 20 caracteres, único no mundo), o mesmo editor de aparência dos agentes, 2 ou 3
-traços de personalidade e uma frase de apresentação da lista (no mundo não há texto livre além do nome). Dá para criar
-ainda na lista de espera.
-
-**Prédio.** Com a conta liberada e o personagem criado, o prédio sobe sozinho (por WebSocket) e acompanha o escritório
-ao vivo. O cartão **Seu prédio** mostra a conexão, os andares, os agentes, a última remessa e, quando o mundo recusa uma
-remessa ou para o prédio (versão antiga, outro computador, conta suspensa ou banida), o motivo; conta suspensa ou
-banida ganha **Recorrer por e-mail**. Um prédio marcado como "não verificado" (números fora do plausível, em revisão)
-fica fora de placares e destaques e mostra **Contestar por e-mail**. Quando o mundo está em manutenção, o cartão diz, e
-o Habblaud tenta de novo sozinho.
-
-**Visibilidade.** Ao vivo (andares, contadores e o status de cada personagem) ou **modo discreto** (só aceso ou apagado
-e o número de andares); fechado a visitas; esconder o país; os **tokens** do prédio só em faixas (até 100 mil, 1
-milhão…), nunca o número nem o custo, e dá para desligar; placar e compactações só se você ligar; bater na porta
-(**Avisar quando baterem na porta**) também só se você ligar.
-
-**Cidade.** O botão **Mundo**, na barra do topo, troca o escritório pela cidade: anda-se com setas/WASD ou clicando, o
-cartão de cada prédio mostra andares, agentes e estado, e o minimapa fica no canto; pausado ou fora do mundo, o seu
-prédio fica apagado, mas dá para andar pela cidade. No modo demonstração (`?mock=1&world=approved&scene=city`, só
-prédios e pessoas fictícios): [a cidade](docs/screenshots/world-cidade.png) e
-[o cartão de um prédio](docs/screenshots/world-cartao.png).
-
-**Visitas.** Perto da porta de um prédio, **Entrar (E)** leva para dentro: o escritório do dono ao vivo, com as salas de
-nomes fictícios e os agentes no status de agora, só para ver (nada de terminal, mensagens ou permissões, e nada do
-trabalho); prédio fechado a visitas só se vê por fora. No seu, você vê "N visitantes agora" (só a contagem, nunca quem).
-No modo demonstração: [a visita](docs/screenshots/world-visita.png) e
-[o painel da visita](docs/screenshots/world-visita-painel.png).
-
-**Social.** Na cidade, sem nenhum texto livre: **L** curte o prédio perto da porta, **G** abre a roda de cumprimentos
-(frases prontas, traduzidas para quem lê) e **K** bate na porta de quem aceita; o cartão de cada pessoa tem
-Cumprimentar, Bloquear e Denunciar, e o minimapa leva a um prédio pelo código ("Ir para HB-XXXX") ou a um prédio aceso
-qualquer. Dentro de um prédio, **Curtir** e **Deixar um carimbo** na portaria (um por prédio por dia). Na praça, o
-termômetro da meta da semana da cidade e, quando ela bate, fogos. No escritório, o chip "❤️ N hoje" e o cartão "Enquanto
-você estava fora" com as visitas, os likes e os carimbos deixados na portaria (nunca quem); quem você bloqueou fica em
-**Bloqueados**, com **Desbloquear**. No modo demonstração: [a roda de cumprimentos](docs/screenshots/world-social.png) e
-[a praça com os fogos](docs/screenshots/world-praca.png).
-
-**Pausar, sair, excluir.** **Pausar** apaga o prédio na hora e guarda o lote (com 30 dias pausado, ele some do mapa; 30
-dias depois, é retirado). **Sair do mundo** retira o prédio e libera o lote; a conta e o personagem continuam, e voltar
-cria um prédio novo. **Excluir conta** (em **Conta e dados**, com o código que chega por e-mail) tira o prédio e o
-perfil do mundo na hora, apaga a conta, os likes, os bloqueios, as denúncias feitas e os dispositivos do banco em 7 dias
-(e dos backups em até 30) e apaga o `world.json` deste computador. Sem notícias do Habblaud por 7 dias, o prédio some do
-mapa e, 30 dias depois, é retirado; um e-mail avisa 3 dias antes (desligável em **Conta e dados**).
-
-**Exportar.** **Baixar meus dados** (em **Conta e dados**) salva `habblaud-world-dados.json` com o que o mundo guarda da
-sua conta: e-mail, datas, personagem, visibilidade, dispositivos, prédio, likes dados, bloqueios e denúncias feitas. Uma
-vez por dia.
-
-**Dados verdadeiros.** O World só funciona se os prédios forem de verdade: mudar o Habblaud para mandar andares,
-agentes, status, tokens ou personagens inventados ou inflados quebra os Termos de Uso e bane a conta (o servidor confere
-a plausibilidade de cada pacote). Mudar o Habblaud para qualquer outra coisa continua livre (MIT). Como o Habblaud fala
-com o World: [shared/world/README.md](shared/world/README.md).
-
-**Testar com um servidor do mundo local.** Para quem desenvolve o World, com o servidor do mundo rodando no próprio
-computador (por exemplo, em Docker, publicado na porta 4848):
-
-- Fora do Docker: `HABBLAUD_WORLD_URL=http://127.0.0.1:4848 npm run dev`.
-- Com o Habblaud no Docker: no `.env` desta pasta, `HABBLAUD_WORLD_URL=http://host.docker.internal:4848` e
-  `HABBLAUD_WORLD_DEV=1`; depois, `npm run docker:up`, que termina com a linha do World
-  (`Habblaud World: ligado: http://host.docker.internal:4848`, ou por que ficou desligado). O `docker-compose.yml` já liga
-  `host.docker.internal` ao host (`extra_hosts` com `host-gateway`; no Docker Desktop o nome já existe). No Linux, o
-  servidor do mundo precisa escutar numa interface que o container alcança (`0.0.0.0` ou o IP da ponte do Docker): uma
-  porta publicada só em `127.0.0.1` do host não responde por `host-gateway`.
-- Sem TLS, só com `HABBLAUD_WORLD_DEV=1` (ou `--dev`) e só para `127.0.0.1` e `host.docker.internal`; fora disso, só
-  `https://` ou `wss://`. O servidor do mundo precisa aceitar o nome usado na URL como o host do jogo (senão responde
-  `421`).
-
-Como a seção fica, no modo demonstração (`?mock=1&world=logged_out`, `waiting` ou `approved`):
-[sem conta](docs/screenshots/world-sem-conta.png), [lista de espera](docs/screenshots/world-lista-de-espera.png),
-[personagem](docs/screenshots/world-personagem.png), [Seu prédio](docs/screenshots/world-predio.png) e
-[o que foi enviado](docs/screenshots/world-enviado.png).
 
 ## Como funciona
 
@@ -937,8 +887,6 @@ das contas (letra, e-mail, organização) são lidos no host pelo `docker:up` e 
   sem token, à API pública do GitHub (`api.github.com/repos/marmottajr/habblaud/releases/latest`). Ela não envia nada
   sobre as suas sessões; o GitHub vê só o seu IP e a versão em uso, que vai no `User-Agent`.
   `HABBLAUD_UPDATE_CHECK=0` desliga a consulta.
-  O [Habblaud World](#habblaud-world) (em desenvolvimento, desligado por padrão) só fala com o servidor do mundo com
-  `HABBLAUD_WORLD_URL` configurada: veja [o que sai](docs/world/privacidade.md).
   O [celular com login](#celular-com-login-e-https-aprovando-pedidos) também, e ele só existe depois do `npm run remote:setup`.
 - **Sem credenciais:** o Habblaud não lê senhas nem tokens de acesso. Do `.claude.json` de cada conta aproveita só o
   e-mail, a organização e o cache do `/usage`; o uso ao vivo vem do mod (ou do tap de statusline).
@@ -954,8 +902,11 @@ das contas (letra, e-mail, organização) são lidos no host pelo `docker:up` e 
   de chegar ao navegador; no modo demonstração, a conversa é fictícia. `HABBLAUD_TERMINAL=0` desliga de vez.
   A única exceção é o [celular com login](#celular-com-login-e-https-aprovando-pedidos), e só com `terminal` no `HABBLAUD_REMOTE_ALLOW`.
 - **Linha do tempo do timelapse:** só os resumos que já aparecem na tela (atividade em uma linha, status, títulos,
-  uso das contas, sem e-mails, comandos completos ou conversas), gravados em `~/.habblaud/timeline/` e apagados depois
-  de 7 dias. `HABBLAUD_TIMELINE=0` desliga a gravação.
+  uso das contas, sem e-mails, comandos completos ou conversas), gravados em `<HABBLAUD_DATA_DIR>/timeline/` e
+  apagados depois de 7 dias por padrão. Configure `HABBLAUD_TIMELINE_RETENTION_DAYS` (0 mantém tudo); em
+  Configurações → Histórico do timelapse, exporte dias em JSONL ou apague as gravações existentes. Com a gravação
+  ativa, o dia atual pode começar a ser registrado de novo após a limpeza. Isso não apaga os transcripts mantidos
+  pelo Claude Code ou pelo Codex. `HABBLAUD_TIMELINE=0` desliga a gravação.
 - **Responder pelo escritório, só local:** aprovar ou recusar age sobre as sessões, então segue a mesma trava do
   terminal (bind local, `Host` local, nada de proxies ou túneis) e só existe com o hook de permissão (o do plugin
   `habblaud-permissoes` ou o do jeito antigo) instalado por você. As respostas exigem JSON e origem local (um site

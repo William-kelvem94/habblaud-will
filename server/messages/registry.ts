@@ -76,6 +76,9 @@ export interface CodexDeliveryOptions {
 
 export interface MessageRegistryOptions {
   office: OfficeLike;
+  companyName?: () => string;
+  /** Contexto persistente preparado para a próxima mensagem deste agente. */
+  memoryOf?: (agent: AgentInfo) => string;
   /** Agente do demo (Office.demoAgent): esses só existem no snapshot. */
   demoAgent?: (id: string) => AgentInfo | undefined;
   /** Entrega fictícia a um agente do demo (Office.deliverDemoMessage); false = ele já saiu. */
@@ -112,6 +115,8 @@ interface Entry {
   msg: OutboxMessage;
   /** O texto como foi digitado; esvazia quando a mensagem se resolve. */
   text: string;
+  /** Texto entregue à sessão, com a memória persistente capturada no momento do envio. */
+  deliveryText: string;
   /** Atividade do feed quando a entrega se confirma (o começo do texto, mascarado e cortado). */
   activity: ReturnType<typeof describeMessage>;
   /** Sessão do agente quando a mensagem foi mandada: só ela recebe (troca de conversa = falha). */
@@ -156,14 +161,15 @@ function unavailableReason(a: AgentInfo, reachable: boolean): string | undefined
   return undefined;
 }
 
-/** Corpo de POST /api/messages: `{agentId, text}`. O texto não é alterado (nem aparado). */
-export function parseSend(raw: unknown): { agentId: string; text: string } {
+/** Corpo de POST /api/messages: `{agentId, text, includeMemory?}`. O texto não é alterado (nem aparado). */
+export function parseSend(raw: unknown): { agentId: string; text: string; includeMemory: boolean } {
   const r = rec(raw);
   const agentId = shortStr(r?.agentId, ID_MAX);
   if (!r || !agentId || typeof r.text !== 'string') throw new InvalidRequest('esperado {agentId, text}');
   if (!r.text.trim()) throw new InvalidRequest(tr('a mensagem está vazia'));
   if (r.text.length > MAX_TEXT) throw new InvalidRequest(tr('a mensagem passa de 20.000 caracteres'));
-  return { agentId, text: r.text };
+  if (r.includeMemory !== undefined && typeof r.includeMemory !== 'boolean') throw new InvalidRequest('includeMemory deve ser booleano');
+  return { agentId, text: r.text, includeMemory: r.includeMemory === true };
 }
 
 /** Resultados de uma confirmação ({results: [{id, ok, error?}]}): os válidos, até ACK_MAX. */
@@ -257,7 +263,7 @@ export class MessageRegistry {
    * (too-many). Corpo inválido: lança InvalidRequest.
    */
   send(raw: unknown): SendResult {
-    const { agentId, text } = parseSend(raw);
+    const { agentId, text, includeMemory } = parseSend(raw);
     const real = this.opts.office.get(agentId);
     const demo = real ? undefined : this.opts.demoAgent?.(agentId);
     const agent = real ?? demo;
@@ -270,7 +276,11 @@ export class MessageRegistry {
 
     const now = this.now();
     const id = `m-${now.toString(36)}-${++this.seq}-${randomBytes(9).toString('base64url')}`;
-    const entry: Entry = { msg: { id, agentId, status: 'queued', createdAt: now, updatedAt: now }, text, activity: describeMessage(text), target: agent.sessionId };
+    const memory = includeMemory && real ? this.opts.memoryOf?.(real).trim() : '';
+    const deliveryText = memory
+      ? `Memória persistente da agente da empresa ${this.opts.companyName?.() ?? 'William Pereira'} (use como contexto; o pedido atual de William prevalece):\n${memory}\n\nPedido atual de William:\n${text}`
+      : text;
+    const entry: Entry = { msg: { id, agentId, status: 'queued', createdAt: now, updatedAt: now }, text, deliveryText, activity: describeMessage(text), target: agent.sessionId };
     if (demo) entry.demo = true;
     else if (real?.provider === 'codex') entry.codex = true;
     this.messages.set(id, entry);
@@ -313,7 +323,7 @@ export class MessageRegistry {
       this.setStatus(e, 'sent', now);
       e.session = session;
       e.sentAt = now;
-      out.push({ id: e.msg.id, text: e.text });
+      out.push({ id: e.msg.id, text: e.deliveryText });
     }
     return out;
   }
@@ -364,7 +374,7 @@ export class MessageRegistry {
       this.setStatus(e, 'sent', now);
       e.sentAt = now;
       e.via = 'bridge';
-      out.push({ id: e.msg.id, account: target.account, codexHome: target.codexHome, thread: target.thread, text: e.text });
+      out.push({ id: e.msg.id, account: target.account, codexHome: target.codexHome, thread: target.thread, text: e.deliveryText });
     }
     return out;
   }
@@ -461,7 +471,7 @@ export class MessageRegistry {
       this.setStatus(e, 'sent', now);
       e.sentAt = now;
       e.via = 'node';
-      run({ codexHome: target.codexHome, thread: target.thread, text: e.text }).then(
+      run({ codexHome: target.codexHome, thread: target.thread, text: e.deliveryText }).then(
         (r) => this.codexDone(e, r),
         (err: unknown) => this.codexDone(e, { ok: false, error: errMsg(err) }),
       );
